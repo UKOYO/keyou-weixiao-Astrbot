@@ -1,0 +1,67 @@
+{
+  "api_base": {
+    "type": "string",
+    "description": "中转站地址",
+    "default": "https://api.syuan.org"
+  },
+  "access_token": {
+    "type": "string",
+    "description": "账号访问令牌（可选）。填入后走 /api/log/ 拉到账号全量日志，能看到所有令牌的报错；留空则只用 API Key，只能看到自己令牌的流水",
+    "default": ""
+  },
+  "user_id": {
+    "type": "string",
+    "description": "账号用户 ID（配合访问令牌使用，New API 后台个人设置里可见）",
+    "default": ""
+  },
+  "api_key": {
+    "type": "string",
+    "description": "星渊 API Key（sk- 开头，可选）。留空时自动从 cmd_config.json 里抓取 syuan 的 key",
+    "default": ""
+  },
+  "refresh_seconds": {
+    "type": "int",
+    "description": "后端缓存秒数，实时轮询下的最小拉取间隔",
+    "default": 6
+  },
+  "log_page_size": {
+    "type": "int",
+    "description": "每次拉取的日志条数",
+    "default": 1000
+  },
+  "daily_page_size": {
+    "type": "int",
+    "description": "每日 06:00 日报拉取的日志条数（覆盖昨天全天，建议大于实时界面）",
+    "default": 3000
+  },
+  "alert_enabled": {
+    "type": "bool",
+    "description": "开启报错尖峰提醒：短时间内报错过多时主动私聊播报",
+    "default": false
+  },
+  "alert_interval_seconds": {
+    "type": "int",
+    "description": "尖峰巡检间隔（秒）",
+    "default": 300
+  },
+  "alert_threshold": {
+    "type": "int",
+    "description": "触发提醒的近十分钟报错条数阈值",
+    "default": 10
+  },
+  "alert_cooldown_seconds": {
+    "type": "int",
+    "description": "两次提醒之间的最短冷却（秒）",
+    "default": 1800
+  },
+  "auto_checkin_enabled": {
+    "type": "bool",
+    "description": "开启自动签到：每天到点自动替你做一次星渊签到，成功后私聊播报",
+    "default": true
+  },
+  "auto_checkin_time": {
+    "type": "string",
+    "description": "自动签到时刻（24 小时制 HH:MM，默认 00:05）",
+    "default": "00:05"
+  }
+}

@@ -1,0 +1,217 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>大魔王的星渊账本</title>
+  <link rel="stylesheet" href="./style.css" />
+</head>
+<body>
+  <div class="wrap">
+    <header class="bar">
+      <div class="title">
+        <h1>星渊账本</h1>
+        <p id="subtitle" class="subtitle">正在连线中转站……</p>
+      </div>
+      <div class="tools">
+        <div class="seg" id="rangeSeg" title="切换统计窗口：实时 / 昨日全天 / 今日全天">
+          <button class="seg-btn active" type="button" data-range="live">实时</button>
+          <button class="seg-btn" type="button" data-range="yesterday">昨日</button>
+          <button class="seg-btn" type="button" data-range="today">今日</button>
+        </div>
+        <label class="switch" title="开启后按设定间隔自动拉取实时数据">
+          <input id="liveToggle" type="checkbox" />
+          <span>实时</span>
+        </label>
+        <select id="liveInterval" class="input select-sm" title="刷新间隔">
+          <option value="5">5 秒</option>
+          <option value="10" selected>10 秒</option>
+          <option value="30">30 秒</option>
+          <option value="60">60 秒</option>
+        </select>
+        <span id="liveDot" class="live-dot"></span>
+        <button id="reloadBtn" class="btn" type="button">刷新数据</button>
+      </div>
+    </header>
+
+    <p id="hint" class="hint hidden"></p>
+
+    <nav class="tabs" id="tabs">
+      <button class="tab active" type="button" data-view="overview">总览</button>
+      <button class="tab" type="button" data-view="errors">
+        报错日志 <span id="errBadge" class="badge hidden">0</span>
+      </button>
+      <button class="tab" type="button" data-view="flow">调用流水</button>
+      <button class="tab" type="button" data-view="tools">插件工具</button>
+      <button class="tab" type="button" data-view="card">手账卡片</button>
+    </nav>
+
+    <!-- ============================ 总览 ============================ -->
+    <div class="view" id="view-overview">
+      <section class="cards">
+        <div class="stat-card coral">
+          <span class="stat-label">总调用次数</span>
+          <span id="statCalls" class="stat-value">--</span>
+        </div>
+        <div class="stat-card red">
+          <span class="stat-label">报错次数</span>
+          <span id="statErrors" class="stat-value">--</span>
+        </div>
+        <div class="stat-card yellow">
+          <span class="stat-label">总花费估算</span>
+          <span id="statCost" class="stat-value">--</span>
+        </div>
+        <div class="stat-card green">
+          <span class="stat-label">平均延迟</span>
+          <span id="statLatency" class="stat-value">--</span>
+        </div>
+        <div class="stat-card blue">
+          <span class="stat-label">模型 / 插件</span>
+          <span id="statCount" class="stat-value">--</span>
+        </div>
+      </section>
+
+      <section class="panel">
+        <div class="panel-head">
+          <h2>各模型花费与调用</h2>
+          <span id="scopeText" class="scope">数据范围：--</span>
+        </div>
+        <div class="table-wrap">
+          <table class="tbl">
+            <thead>
+              <tr>
+                <th>模型</th><th class="num">调用</th><th class="num">报错</th>
+                <th class="num">均延</th><th class="num">花费</th>
+              </tr>
+            </thead>
+            <tbody id="modelBody"></tbody>
+          </table>
+        </div>
+      </section>
+    </div>
+
+    <!-- ============================ 报错 ============================ -->
+    <div class="view hidden" id="view-errors">
+      <section class="cards">
+        <div class="stat-card red">
+          <span class="stat-label">报错总数</span>
+          <span id="errTotal" class="stat-value">--</span>
+        </div>
+        <div class="stat-card coral">
+          <span id="errWindowLabel" class="stat-label">近一小时</span>
+          <span id="errLastHour" class="stat-value">--</span>
+        </div>
+        <div class="stat-card yellow">
+          <span class="stat-label">报错占比</span>
+          <span id="errRate" class="stat-value">--</span>
+        </div>
+        <div class="stat-card blue">
+          <span class="stat-label">最热错误码</span>
+          <span id="errTopCode" class="stat-value">--</span>
+        </div>
+      </section>
+
+      <section class="panel">
+        <div class="panel-head">
+          <h2>报错分布</h2>
+        </div>
+        <div class="chips" id="errChips"></div>
+      </section>
+
+      <section class="panel">
+        <div class="panel-head">
+          <h2>报错明细</h2>
+          <div class="filter-bar">
+            <input id="errSearch" class="input" type="search" placeholder="搜详情 / 模型 / 分类" />
+            <select id="errModel" class="input"><option value="">全部模型</option></select>
+            <select id="errToken" class="input"><option value="">全部令牌</option></select>
+            <select id="errCode" class="input"><option value="">全部状态码</option></select>
+            <select id="errHours" class="input">
+              <option value="1">近 1 小时</option>
+              <option value="6">近 6 小时</option>
+              <option value="24">近 24 小时</option>
+              <option value="0" selected>全部时间</option>
+            </select>
+          </div>
+        </div>
+        <div class="table-wrap">
+          <table class="tbl">
+            <thead>
+              <tr>
+                <th>时间</th><th>令牌</th><th>模型</th><th>渠道</th>
+                <th class="num">状态码</th><th>分类</th><th class="num">耗时</th><th>详情</th>
+              </tr>
+            </thead>
+            <tbody id="errBody"></tbody>
+          </table>
+        </div>
+        <p id="errFoot" class="muted"></p>
+      </section>
+    </div>
+
+    <!-- ============================ 流水 ============================ -->
+    <div class="view hidden" id="view-flow">
+      <section class="panel">
+        <div class="panel-head">
+          <h2>最近调用流水</h2>
+          <div class="filter-bar">
+            <select id="flowFilter" class="input">
+              <option value="all">全部</option>
+              <option value="error">只看报错</option>
+              <option value="ok">只看成功</option>
+            </select>
+          </div>
+        </div>
+        <div class="table-wrap">
+          <table class="tbl">
+            <thead>
+              <tr>
+                <th>时间</th><th>状态</th><th>令牌</th><th>模型</th>
+                <th class="num">耗时</th><th class="num">输入</th>
+                <th class="num">输出</th><th class="num">花费</th><th>详情</th>
+              </tr>
+            </thead>
+            <tbody id="logBody"></tbody>
+          </table>
+        </div>
+      </section>
+    </div>
+
+    <!-- ============================ 工具 ============================ -->
+    <div class="view hidden" id="view-tools">
+      <section class="panel">
+        <div class="panel-head">
+          <h2>插件与工具调用明细</h2>
+          <input id="toolSearch" class="input" type="search" placeholder="搜插件 / 工具 / 模型" />
+        </div>
+        <div class="table-wrap">
+          <table class="tbl">
+            <thead>
+              <tr>
+                <th>插件 · 功能</th><th>原始 ID</th><th>驱动 LLM</th>
+                <th class="num">触发</th><th class="num">Token</th><th class="num">花费</th>
+              </tr>
+            </thead>
+            <tbody id="toolBody"></tbody>
+          </table>
+        </div>
+      </section>
+    </div>
+
+    <!-- ============================ 手账 ============================ -->
+    <div class="view hidden" id="view-card">
+      <section class="panel">
+        <div class="panel-head">
+          <h2>手账卡片</h2>
+          <button id="cardBtn" class="btn" type="button">重新渲染</button>
+        </div>
+        <div id="cardBox" class="card-box">
+          <p class="muted">点击右上角按钮渲染。</p>
+        </div>
+      </section>
+    </div>
+  </div>
+
+  <script src="./app.js"></script>
+</body>
+</html>
