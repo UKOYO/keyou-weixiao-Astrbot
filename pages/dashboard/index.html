@@ -38,6 +38,7 @@
 
     <nav class="tabs" id="tabs">
       <button class="tab active" type="button" data-view="overview">总览</button>
+      <button class="tab" type="button" data-view="wallet">钱包</button>
       <button class="tab" type="button" data-view="errors">
         报错日志 <span id="errBadge" class="badge hidden">0</span>
       </button>
@@ -85,6 +86,77 @@
               </tr>
             </thead>
             <tbody id="modelBody"></tbody>
+          </table>
+        </div>
+      </section>
+    </div>
+
+    <!-- ============================ 钱包 ============================ -->
+    <div class="view hidden" id="view-wallet">
+      <section class="cards">
+        <div class="stat-card green">
+          <span class="stat-label">当前余额</span>
+          <span id="walBalance" class="stat-value">--</span>
+        </div>
+        <div class="stat-card coral">
+          <span class="stat-label">已用额度</span>
+          <span id="walUsed" class="stat-value">--</span>
+        </div>
+        <div class="stat-card blue">
+          <span class="stat-label">累计请求</span>
+          <span id="walRequests" class="stat-value">--</span>
+        </div>
+        <div class="stat-card yellow">
+          <span class="stat-label">邀请奖励</span>
+          <span id="walAff" class="stat-value">--</span>
+        </div>
+      </section>
+
+      <section class="panel">
+        <div class="panel-head">
+          <h2>账号与签到</h2>
+          <span id="walStamp" class="scope">--</span>
+        </div>
+        <div class="chips" id="walChips"></div>
+      </section>
+
+      <section class="panel">
+        <div class="panel-head">
+          <h2>入账明细</h2>
+          <div class="seg" id="walLedgerSeg" title="按来源拆开：自己充值 / 兑换码 / 签到 / 邀请">
+            <button class="seg-btn active" type="button" data-src="all">全部</button>
+            <button class="seg-btn" type="button" data-src="self">自己充值</button>
+            <button class="seg-btn" type="button" data-src="code">兑换码</button>
+            <button class="seg-btn" type="button" data-src="checkin">签到</button>
+            <button class="seg-btn" type="button" data-src="aff">邀请</button>
+          </div>
+        </div>
+        <div class="chips" id="walLedgerChips"></div>
+        <div class="table-wrap">
+          <table class="tbl">
+            <thead>
+              <tr>
+                <th>时间</th><th>来源</th><th>说明</th>
+                <th class="num">额度</th><th class="num">折合</th><th class="num">实付</th>
+              </tr>
+            </thead>
+            <tbody id="walLedgerBody"></tbody>
+          </table>
+        </div>
+        <p id="walLedgerFoot" class="muted"></p>
+      </section>
+
+      <section class="panel">
+        <div class="panel-head">
+          <h2>最近签到记录</h2>
+          <span id="walRate" class="scope">换算：--</span>
+        </div>
+        <div class="table-wrap">
+          <table class="tbl">
+            <thead>
+              <tr><th>日期</th><th class="num">额度</th><th class="num">折合</th></tr>
+            </thead>
+            <tbody id="walBody"></tbody>
           </table>
         </div>
       </section>

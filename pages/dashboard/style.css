@@ -496,6 +496,7 @@ body {
 .chip-coral  { background: linear-gradient(180deg, #4a2f26, #38241d); border-color: #7a4a35; color: #f3b48c; }
 .chip-yellow { background: linear-gradient(180deg, #4a3d1f, #382e18); border-color: #7a652f; color: #eccb72; }
 .chip-blue   { background: linear-gradient(180deg, #26374a, #1d2b39); border-color: #365273; color: #9cc0e8; }
+.chip-green  { background: linear-gradient(180deg, #22402c, #1a3123); border-color: #356146; color: #9fd8ae; }
 
 .spark {
   display: inline-flex;

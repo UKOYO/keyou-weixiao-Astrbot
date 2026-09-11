@@ -34,6 +34,11 @@
     "description": "每日 06:00 日报拉取的日志条数（覆盖昨天全天，建议大于实时界面）",
     "default": 3000
   },
+  "daily_flow_rows": {
+    "type": "int",
+    "description": "日报卡片里画几条流水明细：0 = 只留汇总不画明细（默认），大于 0 则列最近 N 条",
+    "default": 0
+  },
   "alert_enabled": {
     "type": "bool",
     "description": "开启报错尖峰提醒：短时间内报错过多时主动私聊播报",
@@ -63,5 +68,10 @@
     "type": "string",
     "description": "自动签到时刻（24 小时制 HH:MM，默认 00:05）",
     "default": "00:05"
+  },
+  "theme": {
+    "type": "string",
+    "description": "主题风格：dark（默认暗黑Blender）/ light（纯白简约）",
+    "default": "dark"
   }
 }

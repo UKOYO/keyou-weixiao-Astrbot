@@ -423,3 +423,309 @@ class SyuanAccount:
                     }
                 )
         return items[: max(1, int(limit or 8))]
+
+    # ------------------------------------------------------------ 入账明细
+
+    def online_topups(self, force: bool = False) -> Dict[str, Any]:
+        """站内自助充值的订单（自己扫码付款那部分）。"""
+        if not force:
+            hit = self._cache_get("topups", self.ttl)
+            if hit is not None:
+                return hit
+
+        body, err = self._request("/api/user/topup/self?p=0&page_size=100")
+        if err:
+            stale = self._cache.get("topups")
+            if stale:
+                return dict(stale[1], stale_error=err)
+            return {"error": err, "items": []}
+
+        data = (body or {}).get("data") or {}
+        if not isinstance(data, dict):
+            data = {}
+        items: List[Dict[str, Any]] = []
+        for raw in data.get("items") or []:
+            if not isinstance(raw, dict):
+                continue
+            items.append(
+                {
+                    "id": raw.get("id"),
+                    "amount": float(raw.get("amount") or 0),
+                    "money": float(raw.get("money") or 0),
+                    "trade_no": raw.get("trade_no") or "",
+                    "payment_method": raw.get("payment_method") or "",
+                    "payment_provider": raw.get("payment_provider") or "",
+                    "status": raw.get("status") or "",
+                    "create_time": int(raw.get("create_time") or 0),
+                    "complete_time": int(raw.get("complete_time") or 0),
+                }
+            )
+        info = {
+            "items": items,
+            "total": int(data.get("total") or len(items)),
+            "fetched_at": int(time.time()),
+        }
+        return self._cache_put("topups", info)
+
+    def self_logs(self, log_type: int, force: bool = False) -> Dict[str, Any]:
+        """账号自己的日志：type=1 充值，type=4 系统（签到、邀请）。"""
+        ck = f"logs:{int(log_type)}"
+        if not force:
+            hit = self._cache_get(ck, self.ttl)
+            if hit is not None:
+                return hit
+
+        body, err = self._request(f"/api/log/self?type={int(log_type)}&p=0&page_size=100")
+        if err:
+            stale = self._cache.get(ck)
+            if stale:
+                return dict(stale[1], stale_error=err)
+            return {"error": err, "items": []}
+
+        data = (body or {}).get("data") or {}
+        if not isinstance(data, dict):
+            data = {}
+        items: List[Dict[str, Any]] = []
+        for raw in data.get("items") or []:
+            if not isinstance(raw, dict):
+                continue
+            items.append(
+                {
+                    "id": raw.get("id"),
+                    "type": int(raw.get("type") or log_type),
+                    "content": str(raw.get("content") or ""),
+                    "created_at": int(raw.get("created_at") or 0),
+                }
+            )
+        info = {
+            "items": items,
+            "total": int(data.get("total") or len(items)),
+            "fetched_at": int(time.time()),
+        }
+        return self._cache_put(ck, info)
+
+    #: 入账来源 → 展示名
+    SOURCE_LABEL = {
+        "self": "自己充值",
+        "code": "兑换码",
+        "checkin": "每日签到",
+        "aff": "邀请奖励",
+        "other": "其它入账",
+    }
+
+    @staticmethod
+    def _classify(content: str, log_type: int) -> str:
+        text = content or ""
+        if log_type == 1:
+            return "code" if "兑换码" in text else "self"
+        if log_type == 4:
+            if "签到" in text:
+                return "checkin"
+            if "邀请" in text:
+                return "aff"
+        return "other"
+
+    @staticmethod
+    def _money_in_text(text: str) -> float:
+        """从「... ¥12.5 额度...」里抠出站点货币金额。"""
+        match = re.search(r"[¥￥]\s*([0-9]+(?:\.[0-9]+)?)", text or "")
+        if not match:
+            return 0.0
+        try:
+            return float(match.group(1))
+        except ValueError:
+            return 0.0
+
+    @staticmethod
+    def _method_label(method: str) -> str:
+        table = {
+            "wxpay": "微信支付",
+            "alipay": "支付宝",
+            "stripe": "Stripe",
+            "creem": "Creem",
+            "epay": "易支付",
+            "usdt": "USDT",
+        }
+        key = (method or "").strip().lower()
+        return table.get(key, method or "")
+
+    def _local_codes(self) -> List[Tuple[int, str]]:
+        """本地记下的兑换码（时间戳, 码），用来给上游日志补上明文。"""
+        pairs = []
+        for code, meta in (self.redeemed_map() or {}).items():
+            if not isinstance(meta, dict):
+                continue
+            pairs.append((int(meta.get("at") or 0), str(code)))
+        pairs.sort()
+        return pairs
+
+    def _match_local_code(self, at: int, used: set) -> str:
+        """按时间就近匹配一枚本地兑换码，匹配不到就留空。"""
+        best, best_gap = "", 1e18
+        for ts, code in self._local_codes():
+            if not ts or code in used:
+                continue
+            gap = abs(ts - at)
+            if gap < best_gap:
+                best, best_gap = code, gap
+        if best and best_gap <= 600:
+            used.add(best)
+            return best
+        return ""
+
+    def ledger(self, force: bool = False) -> Dict[str, Any]:
+        """把中转入账拆成「自己充值 / 兑换码 / 每日签到 / 邀请奖励」四路。"""
+        status = self.site_status(force=force)
+        if not isinstance(status, dict) or status.get("error"):
+            status = {}
+        per_unit = float(status.get("quota_per_unit") or 500000) or 500000.0
+
+        rows: List[Dict[str, Any]] = []
+        sources: Dict[str, Dict[str, Any]] = {
+            key: {"label": label, "count": 0, "quota": 0, "money": 0.0, "paid": 0.0}
+            for key, label in self.SOURCE_LABEL.items()
+        }
+
+        def add(row: Dict[str, Any]) -> None:
+            rows.append(row)
+            bucket = sources.setdefault(
+                row["source"],
+                {"label": row["source_label"], "count": 0, "quota": 0, "money": 0.0, "paid": 0.0},
+            )
+            bucket["count"] += 1
+            bucket["quota"] += int(row.get("quota") or 0)
+            bucket["money"] = round(float(bucket["money"]) + float(row.get("money") or 0), 6)
+            bucket["paid"] = round(float(bucket["paid"]) + float(row.get("paid") or 0), 6)
+
+        # ---- 1) 自己充值：站内自助下单（有实付金额与支付方式）
+        topups = self.online_topups(force=force)
+        for item in topups.get("items") or []:
+            amount = float(item.get("amount") or 0)
+            paid = float(item.get("money") or 0)
+            at = int(item.get("complete_time") or item.get("create_time") or 0)
+            parts = []
+            method = self._method_label(item.get("payment_method") or "")
+            if method:
+                parts.append(method)
+            if item.get("trade_no"):
+                parts.append("订单 " + str(item["trade_no"])[:28])
+            if item.get("status") and item["status"] != "success":
+                parts.append(str(item["status"]))
+            add(
+                {
+                    "source": "self",
+                    "source_label": self.SOURCE_LABEL["self"],
+                    "at": at,
+                    "time": time.strftime("%Y-%m-%d %H:%M", time.localtime(at)) if at else "--",
+                    "quota": int(amount * per_unit),
+                    "money": round(amount, 4),
+                    "paid": round(paid, 4),
+                    "code": "",
+                    "detail": " · ".join(parts) or "站内在线充值",
+                }
+            )
+
+        # ---- 2) 兑换码 / 自己充值：账号日志 type=1
+        used_codes: set = set()
+        code_logs = self.self_logs(1, force=force)
+        for item in code_logs.get("items") or []:
+            content = str(item.get("content") or "")
+            kind = self._classify(content, 1)
+            at = int(item.get("created_at") or 0)
+            yuan = self._money_in_text(content)
+            code = self._match_local_code(at, used_codes) if kind == "code" else ""
+            label = self.SOURCE_LABEL.get(kind, self.SOURCE_LABEL["other"])
+            if kind == "code":
+                match_id = re.search(r"兑换码\s*ID\s*([0-9A-Za-z]+)", content)
+                ident = match_id.group(1) if match_id else ""
+                if code:
+                    shown = code[:8] + "…" + code[-4:] if len(code) > 12 else code
+                    detail = "兑换码 " + shown + (" · ID " + ident if ident else "")
+                elif ident:
+                    detail = "公告兑换码 · ID " + ident
+                else:
+                    detail = content.strip()[:60] or label
+            else:
+                detail = content.strip() or label
+            add(
+                {
+                    "source": kind,
+                    "source_label": label,
+                    "at": at,
+                    "time": time.strftime("%Y-%m-%d %H:%M", time.localtime(at)) if at else "--",
+                    "quota": int(round(yuan * per_unit)),
+                    "money": round(yuan, 4),
+                    "paid": 0.0,
+                    "code": code,
+                    "detail": detail,
+                }
+            )
+
+        # ---- 3) 签到：站点签到接口更完整，日志只作为补充
+        checkin = self.checkin_status(force=force)
+        if not isinstance(checkin, dict):
+            checkin = {}
+        seen_days = set()
+        for rec in checkin.get("records") or []:
+            day = str(rec.get("date") or "")
+            quota = int(rec.get("quota") or 0)
+            if not day:
+                continue
+            seen_days.add(day)
+            stamp = 0
+            try:
+                stamp = int(time.mktime(time.strptime(day, "%Y-%m-%d")))
+            except Exception:
+                stamp = 0
+            add(
+                {
+                    "source": "checkin",
+                    "source_label": self.SOURCE_LABEL["checkin"],
+                    "at": stamp,
+                    "time": day,
+                    "quota": quota,
+                    "money": round(quota / per_unit, 4),
+                    "paid": 0.0,
+                    "code": "",
+                    "detail": "每日签到奖励",
+                }
+            )
+
+        # ---- 4) 系统日志 type=4：签到（补齐）、邀请奖励
+        for item in (self.self_logs(4, force=force).get("items") or []):
+            content = str(item.get("content") or "")
+            kind = self._classify(content, 4)
+            at = int(item.get("created_at") or 0)
+            if kind == "checkin":
+                day = time.strftime("%Y-%m-%d", time.localtime(at)) if at else ""
+                if day and day in seen_days:
+                    continue
+                seen_days.add(day)
+            yuan = self._money_in_text(content)
+            label = self.SOURCE_LABEL.get(kind, self.SOURCE_LABEL["other"])
+            add(
+                {
+                    "source": kind,
+                    "source_label": label,
+                    "at": at,
+                    "time": time.strftime("%Y-%m-%d %H:%M", time.localtime(at)) if at else "--",
+                    "quota": int(round(yuan * per_unit)),
+                    "money": round(yuan, 4),
+                    "paid": 0.0,
+                    "code": "",
+                    "detail": content.strip() or label,
+                }
+            )
+
+        rows.sort(key=lambda r: (r.get("at") or 0), reverse=True)
+        summary = {
+            "count": len(rows),
+            "quota": sum(int(r.get("quota") or 0) for r in rows),
+            "money": round(sum(float(r.get("money") or 0) for r in rows), 6),
+            "paid": round(sum(float(r.get("paid") or 0) for r in rows), 6),
+            "by_source": sources,
+            "currency_symbol": str(status.get("currency_symbol") or "¥"),
+            "quota_per_unit": per_unit,
+            "fetched_at": int(time.time()),
+        }
+        return {"items": rows, "summary": summary, "error": (topups.get("stale_error") or "")}

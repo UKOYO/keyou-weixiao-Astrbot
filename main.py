@@ -221,6 +221,7 @@ class SyuanMonitorPlugin(Star):
             ("/errors/summary", self._api_errors_summary, "Syuan 账本：报错聚合概览"),
             ("/live", self._api_live, "Syuan 账本：实时刷新轻量接口"),
             ("/card", self._api_card, "Syuan 账本：手账卡片渲染"),
+            ("/wallet", self._api_wallet, "Syuan 账本：钱包、账号与签到概览"),
         ]
         for path, handler, desc in routes:
             try:
@@ -664,6 +665,76 @@ class SyuanMonitorPlugin(Star):
             logger.warning(f"{LOG_TAG} [{tag}] 失败: {exc!r}")
             return None, error_response("拉取中转站数据失败", status_code=502)
 
+    async def _api_wallet(self) -> Any:
+        """钱包：余额 / 已用 / 请求次数 / 邀请奖励 + 签到状态（都带折算金额）"""
+        info = await asyncio.to_thread(self.account.user_self, False)
+        if not isinstance(info, dict) or info.get("error"):
+            return error_response(
+                str((info or {}).get("error") or "读取账号信息失败"), status_code=502
+            )
+
+        status = await asyncio.to_thread(self.account.site_status)
+        if not isinstance(status, dict) or status.get("error"):
+            status = {}
+        per_unit = float(status.get("quota_per_unit") or QUOTA_PER_USD) or QUOTA_PER_USD
+        symbol = str(status.get("currency_symbol") or "¥")
+
+        def money(quota: Any) -> float:
+            return round(int(quota or 0) / per_unit, 4)
+
+        checkin = await asyncio.to_thread(self.account.checkin_status, False)
+        if not isinstance(checkin, dict):
+            checkin = {}
+
+        records = [
+            {
+                "date": str(item.get("date") or ""),
+                "quota": int(item.get("quota") or 0),
+                "money": money(item.get("quota")),
+            }
+            for item in (checkin.get("records") or [])[:7]
+        ]
+
+        ledger = await asyncio.to_thread(self.account.ledger, False)
+        if not isinstance(ledger, dict):
+            ledger = {"items": [], "summary": {}}
+
+        return json_response(
+            {
+                "status": "ok",
+                "site_name": status.get("system_name") or "星渊",
+                "username": info.get("username") or "",
+                "display_name": info.get("display_name") or "",
+                "group": info.get("group") or "",
+                "role": info.get("role"),
+                "quota": int(info.get("quota") or 0),
+                "quota_money": money(info.get("quota")),
+                "used_quota": int(info.get("used_quota") or 0),
+                "used_money": money(info.get("used_quota")),
+                "request_count": int(info.get("request_count") or 0),
+                "aff_count": int(info.get("aff_count") or 0),
+                "aff_quota": int(info.get("aff_quota") or 0),
+                "aff_money": money(info.get("aff_quota")),
+                "aff_history_quota": int(info.get("aff_history_quota") or 0),
+                "currency_symbol": symbol,
+                "quota_per_unit": per_unit,
+                "display_in_currency": bool(status.get("display_in_currency")),
+                "checkin_enabled": bool(checkin.get("enabled")),
+                "checked_in_today": bool(checkin.get("checked_in_today")),
+                "checkin_count": int(checkin.get("checkin_count") or 0),
+                "total_checkins": int(checkin.get("total_checkins") or 0),
+                "checkin_total_quota": int(checkin.get("total_quota") or 0),
+                "checkin_total_money": money(checkin.get("total_quota")),
+                "checkin_records": records,
+                "ledger": ledger.get("items") or [],
+                "ledger_summary": ledger.get("summary") or {},
+                "ledger_error": ledger.get("error") or "",
+                "stale_error": info.get("stale_error") or "",
+                "fetched_at": int(info.get("fetched_at") or time.time()),
+                "updated_at": time.strftime("%Y-%m-%d %H:%M:%S"),
+            }
+        )
+
     async def _api_overview(self) -> Any:
         """总览：总调用、花费、平均延迟、报错数与数据范围"""
         data, err = await self._report_or_error("overview")
@@ -997,8 +1068,10 @@ class SyuanMonitorPlugin(Star):
         """手动执行一次星渊签到"""
         res = await asyncio.to_thread(self.account.do_checkin)
         if res.get("ok"):
+            quota = int(res.get("quota_awarded") or 0)
+            extra = await self._amount_extra(quota)
             yield event.plain_result(
-                f"Okie-dokie！签到成功啦，到手 {int(res.get('quota_awarded') or 0):,} 额度~"
+                f"Okie-dokie！签到成功啦，到手 {quota:,} 额度{extra}~"
                 f"（{res.get('checkin_date') or '今天'}）往后的日子也交给大魔王盯着 (๑˃ᴗ˂๑)"
             )
             return
@@ -1006,6 +1079,58 @@ class SyuanMonitorPlugin(Star):
             yield event.plain_result(f"今天已经签过啦，别贪心嘛~ {res.get('message') or ''}")
             return
         yield event.plain_result(f"唔……这次没签上：{res.get('message') or '原因不明'}")
+
+    @staticmethod
+    def _pick_redeem_amount(res) -> float:
+        """尽量从兑换响应里抠出到账额度数字。"""
+        payload = res.get("data")
+        if isinstance(payload, dict):
+            candidates = [
+                payload.get(k) for k in ("quota", "amount", "add", "added", "value", "topup")
+            ]
+        else:
+            candidates = [payload]
+        candidates.append(res.get("message"))
+        for item in candidates:
+            if item is None or isinstance(item, bool):
+                continue
+            if isinstance(item, (int, float)):
+                if item > 0:
+                    return float(item)
+                continue
+            matched = re.search(r"\d[\d,]*(?:\.\d+)?", str(item))
+            if matched:
+                value = float(matched.group().replace(",", ""))
+                if value > 0:
+                    return value
+        return 0.0
+
+    async def _amount_extra(self, amount) -> str:
+        """把额度换算成「，折合大概 ¥x」，读不到站点换算系数就返回空串。"""
+        try:
+            amount = float(amount or 0)
+        except (TypeError, ValueError):
+            return ""
+        if amount <= 0:
+            return ""
+        symbol = "¥"
+        per_unit = QUOTA_PER_USD
+        try:
+            status = await asyncio.to_thread(self.account.site_status)
+            if isinstance(status, dict) and not status.get("error"):
+                per_unit = float(status.get("quota_per_unit") or QUOTA_PER_USD) or QUOTA_PER_USD
+                symbol = str(status.get("currency_symbol") or "¥")
+        except Exception:
+            pass
+        return f"，折合大概 {symbol}{amount / per_unit:.2f}"
+
+    async def _redeem_amount_text(self, res) -> str:
+        """把到账额度换算成「额度 + 大概多少钱」，抠不出来就返回空串。"""
+        amount = self._pick_redeem_amount(res)
+        if not amount:
+            return ""
+        extra = await self._amount_extra(amount)
+        return f"到手 {int(amount):,} 额度{extra}"
 
     @filter.command("兑换码", "兑换")
     async def cmd_redeem(self, event: AstrMessageEvent):
@@ -1028,9 +1153,13 @@ class SyuanMonitorPlugin(Star):
             return
         res = await asyncio.to_thread(self.account.redeem, code)
         if res.get("ok"):
-            yield event.plain_result(
-                f"兑换成功啦！{res.get('message') or ''} 额度已经进账 (๑˃̵ᴗ˂̵)و"
-            )
+            detail = await self._redeem_amount_text(res)
+            line = "兑换成功啦！"
+            if detail:
+                line += detail + "，已经进账 "
+            else:
+                line += f"{res.get('message') or ''} 额度已经进账 "
+            yield event.plain_result(line + "(๑˃̵ᴗ˂̵)و")
             return
         if res.get("used"):
             yield event.plain_result("这个码大魔王账本上有记录，之前已经兑过啦~")
@@ -1104,8 +1233,10 @@ class SyuanMonitorPlugin(Star):
 
                 res = await asyncio.to_thread(self.account.do_checkin)
                 if res.get("ok"):
+                    quota = int(res.get("quota_awarded") or 0)
+                    extra = await self._amount_extra(quota)
                     text = (
-                        f"Oha~！自动签到完成啦，{int(res.get('quota_awarded') or 0):,} 额度已经到手"
+                        f"Oha~！自动签到完成啦，{quota:,} 额度已经到手{extra}"
                         f"（{res.get('checkin_date') or '今天'}）。大魔王会一直帮你盯着 (๑˃ᴗ˂๑)"
                     )
                     session_id = f"aiocqhttp:FriendMessage:{self.target_user}"
@@ -1120,6 +1251,26 @@ class SyuanMonitorPlugin(Star):
             except Exception as exc:
                 logger.error(f"{LOG_TAG} 自动签到任务异常: {exc!r}")
                 await asyncio.sleep(600)
+
+    async def _wallet_line(self) -> str:
+        """日报里的一行余额：折算金额 + 原始额度。"""
+        try:
+            info = await asyncio.to_thread(self.account.user_self, True)
+        except Exception as exc:
+            logger.warning(f"{LOG_TAG} [daily] 读取余额失败: {exc!r}")
+            return ""
+        if not isinstance(info, dict) or info.get("error"):
+            return ""
+        try:
+            status = await asyncio.to_thread(self.account.site_status)
+        except Exception:
+            status = {}
+        if not isinstance(status, dict):
+            status = {}
+        per_unit = float(status.get("quota_per_unit") or QUOTA_PER_USD) or QUOTA_PER_USD
+        symbol = str(status.get("currency_symbol") or "¥")
+        quota = int(info.get("quota") or 0)
+        return f"当前余额：{symbol}{quota / per_unit:.2f}（{quota:,} 额度）"
 
     async def _start_daily_cron(self):
         """每天早上 06:00 定时推送给 keyou"""
@@ -1145,7 +1296,9 @@ class SyuanMonitorPlugin(Star):
                     label,
                     int(self.config.get("daily_page_size") or 3000),
                 )
+                balance_line = await self._wallet_line()
                 if data and data.get("all_logs"):
+                    data["flow_rows"] = int(self.config.get("daily_flow_rows") or 0)
                     card_bytes = await asyncio.to_thread(render_journal_card, data)
                     session_id = f"aiocqhttp:FriendMessage:{self.target_user}"
                     await self.context.send_message(
@@ -1153,8 +1306,20 @@ class SyuanMonitorPlugin(Star):
                         [
                             Plain(
                                 f"Oha~！优可，{label}的 API 与工具手账整理好啦，快来看看~ (๑˃̵ᴗ˂̵)و\n"
+                                + balance_line
                             ),
                             Img.fromBytes(card_bytes),
+                        ],
+                    )
+                elif balance_line:
+                    session_id = f"aiocqhttp:FriendMessage:{self.target_user}"
+                    await self.context.send_message(
+                        session_id,
+                        [
+                            Plain(
+                                f"Oha~！优可，{label}没有新的流水，大魔王只报一下余额~\n"
+                                + balance_line
+                            )
                         ],
                     )
                 else:

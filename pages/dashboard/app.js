@@ -10,6 +10,8 @@
     "errBadge", "errTotal", "errLastHour", "errRate", "errTopCode", "errWindowLabel",
     "errChips", "errSearch", "errModel", "errToken", "errCode", "errHours",
     "errBody", "errFoot", "cardBox", "cardBtn", "tabs", "rangeSeg",
+    "walBalance", "walUsed", "walRequests", "walAff", "walStamp", "walChips",
+    "walBody", "walRate", "walLedgerSeg", "walLedgerChips", "walLedgerBody", "walLedgerFoot",
   ].forEach((id) => { el[id] = document.getElementById(id); });
 
   let bridge = null;
@@ -18,6 +20,12 @@
   let errState = { items: [], by_code: [], by_model: [], by_token: [], hourly: [], summary: {} };
   let liveTimer = null;
   let inflight = false;
+  let walletLoaded = false;
+  let walletState = null;
+  let ledgerFilter = "all";
+
+  const SOURCE_CHIP = { self: "chip-coral", code: "chip-yellow", checkin: "chip-green", aff: "chip-blue", other: "" };
+  const SOURCE_LABEL = { self: "自己充值", code: "兑换码", checkin: "每日签到", aff: "邀请奖励", other: "其它入账" };
 
   // 统计窗口：live 实时近况 / yesterday 昨日全天 / today 今日全天
   let range = "live";
@@ -56,6 +64,17 @@
     if (n <= 0) return "$0";
     if (n < 0.0001) return "$" + n.toFixed(4);
     return "$" + n.toFixed(2);
+  }
+
+  function fmtMoney(sym, v) {
+    const n = Number(v) || 0;
+    const s = sym || "¥";
+    if (!n) return s + "0";
+    return s + (Math.abs(n) < 1 ? n.toFixed(4) : n.toFixed(2));
+  }
+
+  function fmtQuota(n) {
+    return (Number(n) || 0).toLocaleString("en-US") + " 额度";
   }
 
   function fmtTime(ts) {
@@ -312,6 +331,129 @@
       (errState.scope ? "（数据范围：" + errState.scope + "）" : "");
   }
 
+  function renderWallet(w) {
+    walletState = w;
+    const sym = w.currency_symbol || "¥";
+    el.walBalance.textContent = fmtMoney(sym, w.quota_money);
+    el.walUsed.textContent = fmtMoney(sym, w.used_money);
+    el.walRequests.textContent = (w.request_count || 0) + " 次";
+    el.walAff.textContent = fmtMoney(sym, w.aff_money);
+    el.walStamp.textContent = (w.site_name || "星渊") + "｜更新于 " + (w.updated_at || "--") +
+      (w.stale_error ? "（降级中：" + w.stale_error + "）" : "");
+    el.walRate.textContent = "换算：" +
+      (Number(w.quota_per_unit) || 0).toLocaleString("en-US") + " 额度 = " + sym + "1";
+
+    el.walChips.textContent = "";
+    const checkinText = !w.checkin_enabled
+      ? "站点没开签到"
+      : (w.checked_in_today
+        ? "今天已签 · 连签 " + (w.checkin_count || 0) + " 天"
+        : "今天还没签");
+    const groups = [
+      ["账号", (w.display_name || w.username || "--") + (w.group ? " · " + w.group : "")],
+      ["余额", fmtQuota(w.quota)],
+      ["已用", fmtQuota(w.used_quota)],
+      ["签到", checkinText],
+      ["签到累计", fmtQuota(w.checkin_total_quota) + "（" + fmtMoney(sym, w.checkin_total_money) + "）"],
+      ["邀请", (w.aff_count || 0) + " 人 · " + fmtMoney(sym, w.aff_money)],
+    ];
+    groups.forEach(([label, value]) => {
+      const box = document.createElement("div");
+      box.className = "chip-group";
+      const t = document.createElement("span");
+      t.className = "chip-label";
+      t.textContent = label;
+      const span = document.createElement("span");
+      span.className = "chip chip-green";
+      span.textContent = String(value);
+      box.appendChild(t);
+      box.appendChild(span);
+      el.walChips.appendChild(box);
+    });
+
+    el.walBody.textContent = "";
+    const recs = w.checkin_records || [];
+    if (!recs.length) {
+      el.walBody.appendChild(emptyRow(3, "还没有签到记录"));
+      renderLedger(w);
+      return;
+    }
+    recs.forEach((r) => {
+      el.walBody.appendChild(row([
+        { text: r.date || "--" },
+        { text: fmtQuota(r.quota), cls: "num" },
+        { text: fmtMoney(sym, r.money), cls: "num" },
+      ]));
+    });
+    renderLedger(w);
+  }
+
+  function renderLedger(w) {
+    const sym = w.currency_symbol || "¥";
+    const sum = w.ledger_summary || {};
+    const by = sum.by_source || {};
+    const all = w.ledger || [];
+    const rows = all.filter((r) => ledgerFilter === "all" || r.source === ledgerFilter);
+
+    el.walLedgerChips.textContent = "";
+    const order = ["self", "code", "checkin", "aff", "other"].filter((k) => by[k] && by[k].count);
+    order.forEach((k) => {
+      const box = document.createElement("div");
+      box.className = "chip-group";
+      const lab = document.createElement("span");
+      lab.className = "chip-label";
+      lab.textContent = by[k].label || SOURCE_LABEL[k] || k;
+      const chip = document.createElement("span");
+      chip.className = "chip " + (SOURCE_CHIP[k] || "");
+      chip.textContent = by[k].count + " 笔 · " + fmtMoney(sym, by[k].money) +
+        (by[k].paid ? "（实付 " + fmtMoney(sym, by[k].paid) + "）" : "");
+      box.appendChild(lab);
+      box.appendChild(chip);
+      el.walLedgerChips.appendChild(box);
+    });
+    if (order.length) {
+      const box = document.createElement("div");
+      box.className = "chip-group";
+      const lab = document.createElement("span");
+      lab.className = "chip-label";
+      lab.textContent = "合计";
+      const chip = document.createElement("span");
+      chip.className = "chip";
+      chip.textContent = (sum.count || all.length) + " 笔 · 折合 " + fmtMoney(sym, sum.money) +
+        (sum.paid ? " · 自己实付 " + fmtMoney(sym, sum.paid) : "");
+      box.appendChild(lab);
+      box.appendChild(chip);
+      el.walLedgerChips.appendChild(box);
+    }
+
+    el.walLedgerBody.textContent = "";
+    if (!rows.length) {
+      el.walLedgerBody.appendChild(emptyRow(6, all.length ? "这个来源暂时没有入账" : "还没读到入账记录"));
+    } else {
+      rows.forEach((r) => {
+        el.walLedgerBody.appendChild(row([
+          { text: r.time || "--" },
+          { text: r.source_label || SOURCE_LABEL[r.source] || r.source || "-" },
+          { text: r.detail || "", cls: "detail-cell", title: r.detail || "" },
+          { text: fmtQuota(r.quota), cls: "num" },
+          { text: fmtMoney(sym, r.money), cls: "num" },
+          { text: r.paid ? fmtMoney(sym, r.paid) : "—", cls: "num" },
+        ]));
+      });
+    }
+    el.walLedgerFoot.textContent = "显示 " + rows.length + " / " + all.length + " 条入账" +
+      (w.ledger_error ? "（部分来源降级：" + w.ledger_error + "）" : "");
+  }
+
+  async function loadWallet(force) {
+    if (!force && walletLoaded) return;
+    const w = await bridge.apiGet("api/wallet");
+    if (w && w.status === "ok") {
+      walletLoaded = true;
+      renderWallet(w);
+    }
+  }
+
   function renderCardImg(dataUrl) {
     el.cardBox.textContent = "";
     const img = document.createElement("img");
@@ -367,6 +509,7 @@
       flowItems = (logs && logs.items) || [];
       renderFlow();
       await loadErrors();
+      await loadWallet(!!force);
       await loadCard(!!force);
       showHint("");
     } catch (err) {
@@ -453,11 +596,12 @@
       Array.prototype.forEach.call(el.tabs.querySelectorAll(".tab"), (b) => {
         b.classList.toggle("active", b === btn);
       });
-      ["overview", "errors", "flow", "tools", "card"].forEach((v) => {
+      ["overview", "wallet", "errors", "flow", "tools", "card"].forEach((v) => {
         const node = document.getElementById("view-" + v);
         if (node) node.classList.toggle("hidden", v !== btn.dataset.view);
       });
       if (btn.dataset.view === "card") loadCard(false).catch(() => {});
+      if (btn.dataset.view === "wallet") loadWallet(false).catch(() => {});
     });
   }
 
@@ -467,6 +611,17 @@
       const btn = e.target.closest(".seg-btn");
       if (btn) setRange(btn.dataset.range);
     });
+    if (el.walLedgerSeg) {
+      el.walLedgerSeg.addEventListener("click", (e) => {
+        const btn = e.target.closest(".seg-btn");
+        if (!btn) return;
+        ledgerFilter = btn.dataset.src || "all";
+        Array.prototype.forEach.call(el.walLedgerSeg.querySelectorAll(".seg-btn"), (b) => {
+          b.classList.toggle("active", b === btn);
+        });
+        if (walletState) renderLedger(walletState);
+      });
+    }
     el.liveToggle.addEventListener("change", () => setLive(el.liveToggle.checked));
     el.liveInterval.addEventListener("change", () => {
       if (el.liveToggle.checked) setLive(true);

@@ -138,6 +138,15 @@ def render_journal_card(data: Dict[str, Any]) -> bytes:
     tool_stats = data.get("tool_stats", {}) or {}
     model_stats = data.get("model_stats", {}) or {}
     recent_logs = data.get("recent_logs", []) or []
+    all_logs = list(data.get("all_logs") or []) or list(recent_logs)
+    try:
+        raw_rows = data.get("flow_rows")
+        flow_rows = 5 if raw_rows is None else max(0, int(raw_rows))
+    except Exception:
+        flow_rows = 5
+    shown_logs = all_logs[:flow_rows] if flow_rows > 0 else []
+    flow_total = len(all_logs) or len(recent_logs)
+    flow_overflow = bool(shown_logs) and flow_total > len(shown_logs)
     error_items = (data.get("error_stats", {}) or {}).get("items", []) or []
 
     err_lines = min(3, len(error_items)) if error_items else 1
@@ -148,7 +157,7 @@ def render_journal_card(data: Dict[str, Any]) -> bytes:
         + 44 + err_lines * 36 + 18            # 报错速览
         + 40 + max(1, len(tool_stats)) * tool_h   # 工具明细
         + 40 + max(1, len(model_stats)) * 38      # 模型分布
-        + 40 + len(recent_logs[:5]) * 46          # 实时流水
+        + ((40 + max(1, len(shown_logs)) * 46 + (24 if flow_overflow else 0)) if flow_rows > 0 else 0)
         + 58                                  # 页脚
     )
 
@@ -306,29 +315,40 @@ def render_journal_card(data: Dict[str, Any]) -> bytes:
         cur_y += 38
     cur_y += 12
 
-    # ---- 实时流水
-    draw.text((24, cur_y), "实时 API 交互流水", fill=INK, font=f_bold)
-    draw.line([(24, cur_y + 25), (width - 24, cur_y + 25)], fill=PANEL_LINE, width=1)
-    cur_y += 36
+    if flow_rows > 0:
+        # ---- 流水明细
+        draw.text((24, cur_y), f"API 交互流水明细（共 {flow_total} 条）", fill=INK, font=f_bold)
+        draw.line([(24, cur_y + 25), (width - 24, cur_y + 25)], fill=PANEL_LINE, width=1)
+        cur_y += 36
 
-    for log in recent_logs[:5]:
-        t_str = time.strftime('%H:%M:%S', time.localtime(log.get("created_at", time.time())))
-        m_name = log.get("model_name", "unknown")
-        use_time = log.get("use_time", 0)
-        cost = (log.get("quota", 0) or 0) / 500000.0
-        in_tok = log.get("prompt_tokens", 0)
-        out_tok = log.get("completion_tokens", 0)
-        box = (24, cur_y, width - 24, cur_y + 38)
-        _bevel_panel(draw, box, radius=6)
-        _accent_bar(draw, 24, cur_y, cur_y + 38, (150, 150, 150), (70, 70, 70), w=5)
-        draw.rounded_rectangle([(38, cur_y + 8), (110, cur_y + 30)], radius=4, fill=(31, 31, 31), outline=PANEL_LINE)
-        draw.text((46, cur_y + 11), t_str, fill=(198, 198, 198), font=f_mono)
-        det, det_x = _tail(
-            draw, f"耗时 {use_time}s  |  Token {in_tok}+{out_tok}  |  ${cost:.5f}", f_small, 300, width - 36
-        )
-        draw.text((122, cur_y + 10), _left_fit(draw, m_name, f_body, 122, det_x), fill=INK, font=f_body)
-        draw.text((det_x, cur_y + 11), det, fill=INK_MUTED, font=f_small)
-        cur_y += 46
+        for log in shown_logs:
+            t_str = time.strftime('%H:%M:%S', time.localtime(log.get("created_at", time.time())))
+            m_name = log.get("model_name", "unknown")
+            use_time = log.get("use_time", 0)
+            cost = (log.get("quota", 0) or 0) / 500000.0
+            in_tok = log.get("prompt_tokens", 0)
+            out_tok = log.get("completion_tokens", 0)
+            box = (24, cur_y, width - 24, cur_y + 38)
+            _bevel_panel(draw, box, radius=6)
+            _accent_bar(draw, 24, cur_y, cur_y + 38, (150, 150, 150), (70, 70, 70), w=5)
+            draw.rounded_rectangle([(38, cur_y + 8), (110, cur_y + 30)], radius=4, fill=(31, 31, 31), outline=PANEL_LINE)
+            draw.text((46, cur_y + 11), t_str, fill=(198, 198, 198), font=f_mono)
+            det, det_x = _tail(
+                draw, f"耗时 {use_time}s  |  Token {in_tok}+{out_tok}  |  ${cost:.5f}", f_small, 300, width - 36
+            )
+            draw.text((122, cur_y + 10), _left_fit(draw, m_name, f_body, 122, det_x), fill=INK, font=f_body)
+            draw.text((det_x, cur_y + 11), det, fill=INK_MUTED, font=f_small)
+            cur_y += 46
+
+        if flow_overflow:
+            more = flow_total - len(shown_logs)
+            draw.text(
+                (38, cur_y + 6),
+                f"卡片只画最近 {len(shown_logs)} 条，还有 {more} 条可以到 WebUI 账本翻~",
+                fill=INK_FAINT,
+                font=f_tiny,
+            )
+            cur_y += 24
 
     # ---- 页脚
     draw.line([(24, height - 46), (width - 24, height - 46)], fill=PANEL_LINE, width=1)
