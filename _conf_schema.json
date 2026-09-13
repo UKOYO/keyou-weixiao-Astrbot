@@ -6,42 +6,62 @@
   },
   "access_token": {
     "type": "string",
-    "description": "账号访问令牌（可选）。填入后走 /api/log/ 拉到账号全量日志，能看到所有令牌的报错；留空则只用 API Key，只能看到自己令牌的流水",
+    "description": "账号访问令牌；留空只用 API Key",
     "default": ""
   },
   "user_id": {
     "type": "string",
-    "description": "账号用户 ID（配合访问令牌使用，New API 后台个人设置里可见）",
+    "description": "账号用户 ID，配合访问令牌使用",
     "default": ""
   },
   "api_key": {
     "type": "string",
-    "description": "星渊 API Key（sk- 开头，可选）。留空时自动从 cmd_config.json 里抓取 syuan 的 key",
+    "description": "星渊 API Key（sk- 开头）；留空则自动读取",
     "default": ""
   },
   "refresh_seconds": {
     "type": "int",
-    "description": "后端缓存秒数，实时轮询下的最小拉取间隔",
+    "description": "后端缓存秒数",
     "default": 6
   },
   "log_page_size": {
     "type": "int",
-    "description": "每次拉取的日志条数",
+    "description": "每次拉取的日志条数，-1 表示不限",
     "default": 1000
   },
   "daily_page_size": {
     "type": "int",
-    "description": "每日 06:00 日报拉取的日志条数（覆盖昨天全天，建议大于实时界面）",
+    "description": "每日日报拉取的日志条数，-1 表示不限",
     "default": 3000
+  },
+  "error_log_cap": {
+    "type": "int",
+    "description": "报错日志展示上限，0 表示不展开明细",
+    "default": 100
+  },
+  "page_size": {
+    "type": "int",
+    "description": "表格每页条数",
+    "default": 30
   },
   "daily_flow_rows": {
     "type": "int",
-    "description": "日报卡片里画几条流水明细：0 = 只留汇总不画明细（默认），大于 0 则列最近 N 条",
+    "description": "日报卡片流水条数，0 表示只留汇总",
     "default": 0
+  },
+  "push_users": {
+    "type": "string",
+    "description": "推送白名单（日报 / 报错尖峰 / 签到播报共用）：QQ 号，多个用逗号或换行分隔；留空则只推给默认用户",
+    "default": ""
+  },
+  "daily_push_users": {
+    "type": "string",
+    "description": "旧字段（已并入 push_users），仅在 push_users 留空时生效",
+    "default": ""
   },
   "alert_enabled": {
     "type": "bool",
-    "description": "开启报错尖峰提醒：短时间内报错过多时主动私聊播报",
+    "description": "开启报错尖峰私聊提醒",
     "default": false
   },
   "alert_interval_seconds": {
@@ -61,17 +81,17 @@
   },
   "auto_checkin_enabled": {
     "type": "bool",
-    "description": "开启自动签到：每天到点自动替你做一次星渊签到，成功后私聊播报",
+    "description": "开启每日自动签到",
     "default": true
   },
   "auto_checkin_time": {
     "type": "string",
-    "description": "自动签到时刻（24 小时制 HH:MM，默认 00:05）",
+    "description": "自动签到时刻（HH:MM）",
     "default": "00:05"
   },
   "theme": {
     "type": "string",
-    "description": "主题风格：dark（默认暗黑Blender）/ light（纯白简约）",
+    "description": "dark 暗黑 / light 纯白",
     "default": "dark"
   }
 }

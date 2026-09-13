@@ -4,21 +4,22 @@
 
   const el = {};
   [
-    "subtitle", "hint", "reloadBtn", "liveToggle", "liveInterval", "liveDot",
+    "subtitle", "hint", "reloadBtn",
     "statCalls", "statErrors", "statCost", "statLatency", "statCount", "scopeText",
     "modelBody", "toolBody", "toolSearch", "logBody", "flowFilter",
+    "modelPager", "toolPager", "logPager", "errPager",
     "errBadge", "errTotal", "errLastHour", "errRate", "errTopCode", "errWindowLabel",
     "errChips", "errSearch", "errModel", "errToken", "errCode", "errHours",
     "errBody", "errFoot", "cardBox", "cardBtn", "tabs", "rangeSeg",
     "walBalance", "walUsed", "walRequests", "walAff", "walStamp", "walChips",
     "walBody", "walRate", "walLedgerSeg", "walLedgerChips", "walLedgerBody", "walLedgerFoot",
+    "themeBtn",
   ].forEach((id) => { el[id] = document.getElementById(id); });
 
   let bridge = null;
   let toolItems = [];
   let flowItems = [];
   let errState = { items: [], by_code: [], by_model: [], by_token: [], hourly: [], summary: {} };
-  let liveTimer = null;
   let inflight = false;
   let walletLoaded = false;
   let walletState = null;
@@ -27,12 +28,59 @@
   const SOURCE_CHIP = { self: "chip-coral", code: "chip-yellow", checkin: "chip-green", aff: "chip-blue", other: "" };
   const SOURCE_LABEL = { self: "自己充值", code: "兑换码", checkin: "每日签到", aff: "邀请奖励", other: "其它入账" };
 
-  // 统计窗口：live 实时近况 / yesterday 昨日全天 / today 今日全天
-  let range = "live";
-  const RANGE_LABEL = { live: "实时近况", yesterday: "昨日全天", today: "今日全天" };
+  // 统计窗口：yesterday 昨日全天 / today 今日全天
+  let range = "today";
+  const RANGE_LABEL = { yesterday: "昨日全天", today: "今日全天" };
+
+  // 分页：每表一页 30 条，翻页才请求下一页，不在本地堆全量，省内存
+  const PAGE_SIZE = 30;
+  let pageState = {
+    models: { page: 1, total: 0 },
+    tools: { page: 1, total: 0 },
+    logs: { page: 1, total: 0 },
+    errors: { page: 1, total: 0 },
+  };
 
   function withRange(params) {
     return Object.assign({ range: range }, params || {});
+  }
+
+  function resetPages() {
+    Object.keys(pageState).forEach((k) => { pageState[k].page = 1; });
+  }
+
+  function pageCount(st) {
+    return Math.max(1, Math.ceil((st.total || 0) / PAGE_SIZE));
+  }
+
+  // 生成分页控件：上一页 / 第 N-M 页 / 下一页，并回传点击目标页
+  function pager(st, onGo) {
+    const box = document.createElement("div");
+    box.className = "pager";
+    const totalPages = pageCount(st);
+    const info = document.createElement("span");
+    info.className = "pager-info";
+    const from = (st.page - 1) * PAGE_SIZE + 1;
+    const to = Math.min(st.total || 0, st.page * PAGE_SIZE);
+    info.textContent = st.total ? ("第 " + from + "-" + to + " 条 / 共 " + st.total + " 条") : "暂无数据";
+    const prev = document.createElement("button");
+    prev.className = "pager-btn";
+    prev.textContent = "上一页";
+    prev.disabled = st.page <= 1;
+    const next = document.createElement("button");
+    next.className = "pager-btn";
+    next.textContent = "下一页";
+    next.disabled = st.page >= totalPages;
+    const num = document.createElement("span");
+    num.className = "pager-num";
+    num.textContent = st.page + " / " + totalPages;
+    prev.addEventListener("click", () => { if (st.page > 1) onGo(st.page - 1); });
+    next.addEventListener("click", () => { if (st.page < totalPages) onGo(st.page + 1); });
+    box.appendChild(prev);
+    box.appendChild(num);
+    box.appendChild(next);
+    box.appendChild(info);
+    return box;
   }
 
   // ------------------------------------------------------------------ 基础
@@ -158,14 +206,13 @@
   function renderModels(items) {
     el.modelBody.textContent = "";
     if (!items.length) {
-      el.modelBody.appendChild(emptyRow(5, "暂无模型数据"));
+      el.modelBody.appendChild(emptyRow(4, "暂无模型数据"));
       return;
     }
     items.forEach((it) => {
       el.modelBody.appendChild(row([
         { text: it.model },
         { text: it.calls + " 次", cls: "num" },
-        { text: it.errors ? it.errors + " 次" : "-", cls: it.errors ? "num err-text" : "num" },
         { text: (it.avg_latency || 0).toFixed(1) + " s", cls: "num" },
         { text: fmtCost(it.cost), cls: "num" },
       ]));
@@ -219,13 +266,10 @@
 
   function renderErrorCards(data) {
     const s = data.summary || {};
-    const isLive = range === "live";
     el.errTotal.textContent = (s.total || 0) + " 条";
-    // 历史窗口下「近一小时」没有意义，改成窗口内的受影响模型数
-    if (el.errWindowLabel) el.errWindowLabel.textContent = isLive ? "近一小时" : "受影响模型";
-    el.errLastHour.textContent = isLive
-      ? (s.last_hour || 0) + " 条"
-      : ((data.by_model || []).length) + " 个";
+    // 窗口固定为全天，用窗口内的受影响模型数代替「近一小时」
+    if (el.errWindowLabel) el.errWindowLabel.textContent = "受影响模型";
+    el.errLastHour.textContent = ((data.by_model || []).length) + " 个";
     el.errRate.textContent = (s.error_rate || 0) + " %";
     const top = (data.by_code || [])[0];
     el.errTopCode.textContent = top ? top.name + " ×" + top.count : "无";
@@ -327,7 +371,7 @@
         ], "tr-err"));
       });
     }
-    el.errFoot.textContent = "显示 " + items.length + " / " + errState.items.length + " 条报错" +
+    el.errFoot.textContent = "本页显示 " + items.length + " 条 / 共 " + (pageState.errors.total || errState.items.length) + " 条报错" +
       (errState.scope ? "（数据范围：" + errState.scope + "）" : "");
   }
 
@@ -388,15 +432,64 @@
     renderLedger(w);
   }
 
+  /* 入账来源白名单：与渲染端 data-src 一一对应，未知来源一律归到 other */
+  const LEDGER_SOURCES = ["self", "code", "checkin", "aff", "other"];
+
+  function normSource(s) {
+    return LEDGER_SOURCES.indexOf(s) >= 0 ? s : "other";
+  }
+
+  /* 同步「入账明细」分段：没有数据的来源直接藏掉，选中态一律以 ledgerFilter 为准 */
+  function syncLedgerSeg(by) {
+    if (!el.walLedgerSeg) return;
+    const btns = el.walLedgerSeg.querySelectorAll(".seg-btn");
+    Array.prototype.forEach.call(btns, (b) => {
+      const key = b.dataset.src || b.dataset.source || "all";
+      const dead = key !== "all" && !(by[key] && by[key].count);
+      b.classList.toggle("hidden", dead);
+      if (dead && ledgerFilter === key) ledgerFilter = "all";
+    });
+    Array.prototype.forEach.call(btns, (b) => {
+      const key = b.dataset.src || b.dataset.source || "all";
+      b.classList.toggle("active", key === ledgerFilter);
+    });
+  }
+
+  function setLedgerFilter(next) {
+    const key = String(next == null ? "all" : next);
+    ledgerFilter = (key === "all" || LEDGER_SOURCES.indexOf(key) >= 0) ? key : "all";
+    if (walletState) renderLedger(walletState);
+  }
+
   function renderLedger(w) {
-    const sym = w.currency_symbol || "¥";
-    const sum = w.ledger_summary || {};
+    const sym = (w && w.currency_symbol) || "¥";
+    const sum = (w && w.ledger_summary) || {};
     const by = sum.by_source || {};
-    const all = w.ledger || [];
-    const rows = all.filter((r) => ledgerFilter === "all" || r.source === ledgerFilter);
+    const all = Array.isArray(w && w.ledger) ? w.ledger : [];
+
+    /* 兜底一：筛选值不在白名单里，退回「全部」，避免整张表被误判成空 */
+    if (ledgerFilter !== "all" && LEDGER_SOURCES.indexOf(ledgerFilter) < 0) {
+      ledgerFilter = "all";
+    }
+    /* 兜底二：选中的来源这次一笔都没有，同样退回「全部」 */
+    if (ledgerFilter !== "all" && !(by[ledgerFilter] && by[ledgerFilter].count)) {
+      ledgerFilter = "all";
+    }
+    syncLedgerSeg(by);
+
+    let rows = all.filter((r) => ledgerFilter === "all" || normSource(r.source) === ledgerFilter);
+
+    /* 兜底三：筛选后一行都落不下来（数据结构异常 / 后端字段变了），
+       直接退回「全部」重算，绝不给用户留一张空表 */
+    if (ledgerFilter !== "all" && !rows.length) {
+      /* 后端部分来源降级时会出现「汇总有数、明细为空」，同样退回全部 */
+      ledgerFilter = "all";
+      syncLedgerSeg(by);
+      rows = all.length ? all.slice() : [];
+    }
 
     el.walLedgerChips.textContent = "";
-    const order = ["self", "code", "checkin", "aff", "other"].filter((k) => by[k] && by[k].count);
+    const order = LEDGER_SOURCES.filter((k) => by[k] && by[k].count);
     order.forEach((k) => {
       const box = document.createElement("div");
       box.className = "chip-group";
@@ -443,6 +536,10 @@
     }
     el.walLedgerFoot.textContent = "显示 " + rows.length + " / " + all.length + " 条入账" +
       (w.ledger_error ? "（部分来源降级：" + w.ledger_error + "）" : "");
+
+    /* 切分段后清掉横向滚动并强制重排，避免表体看似空白/挂起 */
+    void el.walLedgerBody.offsetHeight;
+    if (el.walLedgerBody.parentElement) el.walLedgerBody.parentElement.scrollLeft = 0;
   }
 
   async function loadWallet(force) {
@@ -465,7 +562,7 @@
   // ------------------------------------------------------------------ 拉取
 
   async function loadErrors() {
-    const data = await bridge.apiGet("api/errors", withRange({ limit: 500 }));
+    const data = await bridge.apiGet("api/errors", withRange({ page: pageState.errors.page, size: PAGE_SIZE }));
     errState.items = data.items || [];
     errState.by_code = data.by_code || [];
     errState.by_model = data.by_model || [];
@@ -473,6 +570,7 @@
     errState.hourly = data.hourly || [];
     errState.scope = data.scope || "";
     errState.summary = data.summary || {};
+    pageState.errors.total = data.total != null ? data.total : (data.items || []).length;
     el.errChips.dataset.byChannel = JSON.stringify(data.by_channel || []);
     renderErrorCards(data);
     renderErrorChips({
@@ -483,6 +581,7 @@
     fillSelect(el.errToken, (data.by_token || []).map((i) => i.name), "全部令牌");
     fillSelect(el.errCode, (data.by_code || []).map((i) => i.name.replace(/\D/g, "")).filter(Boolean), "全部状态码");
     renderErrorTable();
+    renderPagerFor("errors", el.errPager, loadErrors);
   }
 
   async function loadCard(force) {
@@ -491,23 +590,56 @@
     if (card && card.data_url) renderCardImg(card.data_url);
   }
 
+  function pageParams(name) {
+    return withRange({ page: pageState[name].page, size: PAGE_SIZE });
+  }
+
+  // 只拉当前页的表格数据，翻页时再单独取下一页
+  async function loadModelsPage() {
+    const r = await bridge.apiGet("api/models", pageParams("models"));
+    pageState.models.total = (r && r.total) || 0;
+    renderModels((r && r.items) || []);
+    renderPagerFor("models", el.modelPager, loadModelsPage);
+  }
+
+  async function loadToolsPage() {
+    const r = await bridge.apiGet("api/tools", pageParams("tools"));
+    pageState.tools.total = (r && r.total) || 0;
+    renderTools((r && r.items) || []);
+    renderPagerFor("tools", el.toolPager, loadToolsPage);
+  }
+
+  async function loadLogsPage() {
+    const r = await bridge.apiGet("api/logs", pageParams("logs"));
+    pageState.logs.total = (r && r.total) || 0;
+    flowItems = (r && r.items) || [];
+    renderFlow();
+    renderPagerFor("logs", el.logPager, loadLogsPage);
+  }
+
+  function renderPagerFor(name, host, reloader) {
+    if (!host) return;
+    host.textContent = "";
+    host.appendChild(pager(pageState[name], (p) => {
+      pageState[name].page = p;
+      reloader().catch((e) => showHint("翻页失败：" + (e && e.message ? e.message : e)));
+    }));
+  }
+
   async function loadAll(force) {
     if (inflight) return;
     inflight = true;
     el.reloadBtn.disabled = true;
     showHint("正在拉取中转站数据……");
+    resetPages();
     try {
-      const [ov, models, tools, logs] = await Promise.all([
-        bridge.apiGet("api/overview", withRange()),
-        bridge.apiGet("api/models", withRange()),
-        bridge.apiGet("api/tools", withRange()),
-        bridge.apiGet("api/logs", withRange({ limit: 200 })),
-      ]);
+      const ov = await bridge.apiGet("api/overview", withRange());
       renderOverview(ov);
-      if (models && models.items) renderModels(models.items);
-      if (tools && tools.items) renderTools(tools.items);
-      flowItems = (logs && logs.items) || [];
-      renderFlow();
+      await Promise.all([
+        loadModelsPage(),
+        loadToolsPage(),
+        loadLogsPage(),
+      ]);
       await loadErrors();
       await loadWallet(!!force);
       await loadCard(!!force);
@@ -520,56 +652,6 @@
     }
   }
 
-  async function tickLive() {
-    if (inflight) return;
-    inflight = true;
-    el.liveDot.classList.add("on");
-    try {
-      const live = await bridge.apiGet("api/live", withRange());
-      renderOverview({
-        total_calls: live.total_calls,
-        success_calls: live.success_calls,
-        error_calls: live.error_calls,
-        error_rate: live.error_rate,
-        total_cost: live.total_cost,
-        avg_latency: live.avg_latency,
-        model_count: (el.statCount.textContent.split(" / ")[0]) || 0,
-        tool_count: (el.statCount.textContent.split(" / ")[1]) || 0,
-        scope: live.scope,
-        period: live.period,
-        updated_at: live.updated_at,
-      });
-      el.errLastHour.textContent = (live.error_last_hour || 0) + " 条";
-      flowItems = (live.recent || []).map((it) => ({
-        created_at: it.created_at, token: it.token, model: it.model,
-        status: it.status, code: it.code, detail: it.detail,
-        use_time: it.use_time, cost: it.cost,
-        prompt_tokens: 0, completion_tokens: 0,
-      }));
-      renderFlow();
-      showHint("");
-    } catch (err) {
-      showHint("实时刷新失败：" + (err && err.message ? err.message : err));
-    } finally {
-      el.liveDot.classList.remove("on");
-      inflight = false;
-    }
-  }
-
-  function setLive(on) {
-    if (liveTimer) {
-      clearInterval(liveTimer);
-      liveTimer = null;
-    }
-    if (!on) {
-      el.liveDot.classList.remove("on");
-      return;
-    }
-    const sec = Math.max(3, Number(el.liveInterval.value) || 10);
-    liveTimer = setInterval(tickLive, sec * 1000);
-    tickLive();
-  }
-
   // ------------------------------------------------------------------ 事件
 
   function setRange(next) {
@@ -578,13 +660,7 @@
     Array.prototype.forEach.call(el.rangeSeg.querySelectorAll(".seg-btn"), (b) => {
       b.classList.toggle("active", b.dataset.range === range);
     });
-    // 历史窗口是静止快照，没必要继续轮询，避免空转刷接口
-    const isLive = range === "live";
-    el.liveToggle.disabled = !isLive;
-    if (!isLive && el.liveToggle.checked) {
-      el.liveToggle.checked = false;
-      setLive(false);
-    }
+    // 两个窗口都是静止快照，不做自动轮询，避免空转刷接口
     if (el.cardBox) el.cardBox.textContent = "";
     loadAll(true).catch(() => {});
   }
@@ -605,6 +681,29 @@
     });
   }
 
+  /* ---- 主题以插件设置为准：启动拉一次，切换回写一次，两边永远一致 ---- */
+  async function syncThemeFromServer() {
+    try {
+      const b = await getBridge();
+      const r = await b.apiGet("api/theme");
+      const t = r && r.theme === "light" ? "light" : "dark";
+      if (document.documentElement.getAttribute("data-theme") !== t) {
+        document.documentElement.setAttribute("data-theme", t);
+        try { localStorage.setItem("syuan-theme", t); } catch (err) {}
+        if (el.themeBtn) el.themeBtn.textContent = t === "light" ? "黑夜" : "白昼";
+      }
+    } catch (err) {
+      /* 拿不到就沿用本地缓存，不打断页面 */
+    }
+  }
+
+  function syncThemeToServer(t) {
+    getBridge().then((b) => {
+      if (!b.apiPost) return;
+      b.apiPost("api/theme", { theme: t }).catch(() => {});
+    }).catch(() => {});
+  }
+
   function bind() {
     el.reloadBtn.addEventListener("click", () => loadAll(true));
     el.rangeSeg.addEventListener("click", (e) => {
@@ -615,17 +714,32 @@
       el.walLedgerSeg.addEventListener("click", (e) => {
         const btn = e.target.closest(".seg-btn");
         if (!btn) return;
-        ledgerFilter = btn.dataset.src || "all";
-        Array.prototype.forEach.call(el.walLedgerSeg.querySelectorAll(".seg-btn"), (b) => {
-          b.classList.toggle("active", b === btn);
-        });
-        if (walletState) renderLedger(walletState);
+        setLedgerFilter(btn.dataset.src || btn.dataset.source || "all");
       });
     }
-    el.liveToggle.addEventListener("change", () => setLive(el.liveToggle.checked));
-    el.liveInterval.addEventListener("change", () => {
-      if (el.liveToggle.checked) setLive(true);
-    });
+
+    /* ---- 黑夜 / 白昼主题切换 ---- */
+    function applyTheme(mode, persist) {
+      const next = mode === "light" ? "light" : "dark";
+      document.documentElement.setAttribute("data-theme", next);
+      if (persist) {
+        try { localStorage.setItem("syuan-theme", next); } catch (err) {}
+      }
+      if (el.themeBtn) {
+        el.themeBtn.textContent = next === "light" ? "黑夜" : "白昼";
+        el.themeBtn.title = next === "light" ? "切到黑夜模式" : "切到白昼模式";
+      }
+    }
+    if (el.themeBtn) {
+      applyTheme(document.documentElement.getAttribute("data-theme") || "dark", false);
+      el.themeBtn.addEventListener("click", () => {
+        const now = document.documentElement.getAttribute("data-theme") === "light" ? "light" : "dark";
+        const next = now === "light" ? "dark" : "light";
+        applyTheme(next, true);
+        syncThemeToServer(next);
+      });
+      syncThemeFromServer();
+    }
     el.cardBtn.addEventListener("click", () => loadCard(true).catch(() => {}));
     el.flowFilter.addEventListener("change", renderFlow);
 

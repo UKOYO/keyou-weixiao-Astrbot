@@ -26,9 +26,9 @@ from astrbot.api.web import error_response, json_response
 from astrbot.api.web import request as plugin_request
 
 try:
-    from .renderer import render_journal_card
+    from .renderer import render_journal_card, normalize_theme
 except ImportError:
-    from renderer import render_journal_card
+    from renderer import render_journal_card, normalize_theme
 
 try:
     from .account_api import SyuanAccount
@@ -181,7 +181,7 @@ def _cut(text: str, limit: int = 220) -> str:
     "astrbot_plugin_syuan_monitor",
     "唯笑",
     "监控星渊 API 消费额度、调用分布、耗时与实时报错流水，附工具手账卡片",
-    "1.2.0",
+    "1.2.1",
 )
 class SyuanMonitorPlugin(Star):
     def __init__(self, context: Context, config: dict = None):
@@ -190,6 +190,11 @@ class SyuanMonitorPlugin(Star):
         self.api_base = str(self.config.get("api_base") or "https://api.syuan.org").rstrip("/")
         self.target_user = "2157195950"
         self.log_file = LOCAL_LOG
+        # 报错只做占位展示，不参与成功口径统计；成功调用全量入账
+        try:
+            self.error_log_cap = max(0, int(self.config.get("error_log_cap", 100)))
+        except Exception:
+            self.error_log_cap = 100
         self._cache: Dict[str, Tuple[float, Any]] = {}
         self._alert_seen: set = set()
         self._last_alert_at = 0.0
@@ -222,10 +227,12 @@ class SyuanMonitorPlugin(Star):
             ("/live", self._api_live, "Syuan 账本：实时刷新轻量接口"),
             ("/card", self._api_card, "Syuan 账本：手账卡片渲染"),
             ("/wallet", self._api_wallet, "Syuan 账本：钱包、账号与签到概览"),
+            ("/theme", self._api_theme, "Syuan 账本：主题外观（黑/白）读写"),
         ]
         for path, handler, desc in routes:
             try:
-                self.context.register_web_api(f"{API_PREFIX}{path}", handler, ["GET"], desc)
+                methods = ["GET", "POST"] if path == "/theme" else ["GET"]
+                self.context.register_web_api(f"{API_PREFIX}{path}", handler, methods, desc)
             except Exception as exc:  # pragma: no cover
                 logger.warning(f"{LOG_TAG} [init] 注册 {path} 失败: {exc!r}")
         key, token, uid = self._resolve_credentials()
@@ -299,9 +306,16 @@ class SyuanMonitorPlugin(Star):
         if end_ts:
             window += f"&end_timestamp={int(end_ts)}"
 
-        want = max(1, int(limit or UPSTREAM_PAGE_CAP))
-        page_size = min(want, UPSTREAM_PAGE_CAP)
-        max_pages = max(1, min(80, (want + page_size - 1) // page_size + 2))
+        # limit == -1 表示不限条数：不设 want 上限，一路翻到上游给不出新数据为止。
+        unlimited = int(limit or 0) == -1
+        if unlimited:
+            want = 0
+            page_size = UPSTREAM_PAGE_CAP
+            max_pages = 200
+        else:
+            want = max(1, int(limit or UPSTREAM_PAGE_CAP))
+            page_size = min(want, UPSTREAM_PAGE_CAP)
+            max_pages = max(1, min(80, (want + page_size - 1) // page_size + 2))
 
         def _paged(base_url: str, headers: Dict[str, str]):
             """逐页补齐：上游 p 为 1 起的页码，单页最多 UPSTREAM_PAGE_CAP 条，靠翻页凑够 want 条。
@@ -343,9 +357,9 @@ class SyuanMonitorPlugin(Star):
                     )
                     if oldest and oldest < int(start_ts):
                         break
-                if len(collected) >= want:
+                if not unlimited and len(collected) >= want:
                     break
-            return collected[:want]
+            return collected if unlimited else collected[:want]
 
         def _clip(logs: List[dict]) -> List[dict]:
             if not start_ts and not end_ts:
@@ -418,16 +432,47 @@ class SyuanMonitorPlugin(Star):
         return items
 
     def _analyze(
-        self, logs: List[dict], scope: str, err: str, period: str = ""
+        self,
+        logs: List[dict],
+        scope: str,
+        err: str,
+        period: str = "",
+        start_ts: float = 0.0,
+        end_ts: float = 0.0,
     ) -> Dict[str, Any]:
+        # 成功调用与报错彻底分流：成功全量入账，报错只保留可配置的占位条数。
+        # 下游的模型花费、工具明细、总览一律只吃成功数据，报错自带独立区块。
         consumed = [l for l in logs if l.get("type") == TYPE_CONSUME]
-        errors = [l for l in logs if l.get("type") == TYPE_ERROR]
+        raw_errors = [l for l in logs if l.get("type") == TYPE_ERROR]
 
-        total_calls = len(consumed) + len(errors)
+        total_calls = len(consumed) + len(raw_errors)
         total_quota = sum(l.get("quota", 0) or 0 for l in consumed)
         lat_sum = sum(l.get("use_time", 0) or 0 for l in consumed)
         avg_latency = (lat_sum / len(consumed)) if consumed else 0.0
+        success_calls = len(consumed)
+        error_calls = len(raw_errors)
 
+        # ---- 费用优先取站点侧汇总（/api/log/self/stat），省去本地逐条求和
+        # 有显式时间窗（今日/昨日）就用该窗；实时模式退回「今日 0 点至今」，
+        # 因为不带时间的接口会返回全部历史累计，不是当下口径。
+        stat_start, stat_end = start_ts, end_ts
+        if not stat_start:
+            stat_start, stat_end, _ = self._today_window()
+        stat_quota = None
+        stat_error = ""
+        try:
+            raw_stat = self.account.log_stat(stat_start or 0.0, stat_end or 0.0)
+            if isinstance(raw_stat, dict):
+                if raw_stat.get("error"):
+                    stat_error = str(raw_stat.get("error"))
+                elif raw_stat.get("quota") is not None:
+                    stat_quota = int(raw_stat.get("quota") or 0)
+        except Exception as exc:  # pragma: no cover
+            stat_error = repr(exc)[:120]
+
+        # 汇总口径可用时以站点为准：本地只按当前页估算，会漏掉翻页外的量
+        if stat_quota is not None:
+            total_quota = stat_quota
         model_stats: Dict[str, Dict[str, Any]] = {}
 
         def slot(name: str) -> Dict[str, Any]:
@@ -447,11 +492,14 @@ class SyuanMonitorPlugin(Star):
             stat["quota"] += log.get("quota", 0) or 0
             stat["latency_sum"] += log.get("use_time", 0) or 0
 
-        error_items = [self._parse_error(l) for l in errors]
+        # 报错明细按设定上限截取（占位），不参与上方成功口径的模型/工具统计
+        error_cap = max(0, int(getattr(self, "error_log_cap", 100) or 0))
+        error_items = [self._parse_error(l) for l in raw_errors]
         error_items.sort(key=lambda x: x.get("created_at", 0), reverse=True)
-
-        for item in error_items:
-            slot(item["model"])["errors"] += 1
+        if error_cap:
+            error_items = error_items[:error_cap]
+        else:
+            error_items = []
 
         for stat in model_stats.values():
             calls = stat["calls"] or 0
@@ -488,10 +536,11 @@ class SyuanMonitorPlugin(Star):
         recent_error = error_items[0] if error_items else None
 
         summary = {
-            "total": len(error_items),
+            "total": error_calls,
+            "shown": len(error_items),
             "last_hour": last_hour,
             "last_10min": last_10min,
-            "error_rate": round((len(error_items) / total_calls * 100), 2) if total_calls else 0.0,
+            "error_rate": round((error_calls / total_calls * 100), 2) if total_calls else 0.0,
             "latest": recent_error,
         }
 
@@ -501,9 +550,12 @@ class SyuanMonitorPlugin(Star):
             "fetch_error": err,
             "fetched_at": now,
             "total_calls": total_calls,
-            "success_calls": len(consumed),
-            "error_calls": len(error_items),
+            "success_calls": success_calls,
+            "error_calls": error_calls,
+            "error_shown": len(error_items),
             "total_quota": total_quota,
+            "stat_quota": stat_quota,
+            "stat_error": stat_error,
             "avg_latency": avg_latency,
             "model_stats": model_stats,
             "tool_stats": self._parse_local_tool_stats(),
@@ -551,7 +603,7 @@ class SyuanMonitorPlugin(Star):
             stale["fetch_error"] = err
             self._cache[cache_key] = (time.time(), stale)
             return stale
-        report = self._analyze(logs, scope, err, period)
+        report = self._analyze(logs, scope, err, period, start_ts=start_ts, end_ts=end_ts)
         self._cache[cache_key] = (time.time(), report)
         return report
 
@@ -570,6 +622,14 @@ class SyuanMonitorPlugin(Star):
         end = start + 86400
         st = time.localtime(start)
         return start, end, f"昨日 {st.tm_mon:02d}-{st.tm_mday:02d} 全天"
+
+    @staticmethod
+    def _today_window() -> Tuple[float, float, str]:
+        """返回 (start_ts, end_ts, 标签)，即「今天 00:00 到现在」（左闭右开）。"""
+        lt = time.localtime()
+        today_zero = time.mktime((lt.tm_year, lt.tm_mon, lt.tm_mday, 0, 0, 0, 0, 0, -1))
+        end = time.time()
+        return today_zero, end, f"今日 {lt.tm_mon:02d}-{lt.tm_mday:02d} 00:00 至今"
 
     def _fetch_data(self) -> Dict[str, Any]:
         return self._collect()
@@ -631,14 +691,31 @@ class SyuanMonitorPlugin(Star):
         except Exception:
             return default
 
+    def _page_params(self) -> Tuple[int, int]:
+        """读取 page / size 查询参数，返回 (页号, 每页条数)，均从 1 起算。
+
+        size 传 -1 表示不限：此时按上游单页上限逐页拉全，页号固定按 1 处理。
+        """
+        page = max(1, self._q_int("page", 1))
+        size = self._q_int("size", int(self.config.get("page_size") or 30))
+        if size == -1:
+            return 1, -1
+        size = max(1, min(200, size))
+        return page, size
+
+    def _paginate(self, items: List[Any]) -> List[Any]:
+        """按需切片：只在被请求的那一页返回数据，翻页时才取下一页，省内存。"""
+        page, size = self._page_params()
+        start = (page - 1) * size
+        return items[start:start + size]
+
     def _window_from_query(self) -> Tuple[float, float, str, int]:
         """解析 WebUI 的 range 参数，返回 (start_ts, end_ts, period, page_size)
 
-        live（默认）: 最近 log_page_size 条实时流水，不锁时间；
-        yesterday  : 昨天 00:00:00 ~ 今天 00:00:00（与 06:00 日报同源）；
-        today      : 今天 00:00:00 ~ 此刻。
+        today（默认）: 今天 00:00:00 ~ 此刻；
+        yesterday   : 昨天 00:00:00 ~ 今天 00:00:00（与 06:00 日报同源）。
         """
-        rng = (self._q("range", "live") or "live").strip().lower()
+        rng = (self._q("range", "today") or "today").strip().lower()
         base_page = int(self.config.get("log_page_size") or 1000)
         daily_page = int(self.config.get("daily_page_size") or 3000)
 
@@ -646,13 +723,10 @@ class SyuanMonitorPlugin(Star):
             start, end, label = self._day_window(1)
             return start, end, label, daily_page
 
-        if rng in ("today", "今天"):
-            lt = time.localtime()
-            start = time.mktime((lt.tm_year, lt.tm_mon, lt.tm_mday, 0, 0, 0, 0, 0, -1))
-            st = time.localtime(start)
-            return start, time.time(), f"今日 {st.tm_mon:02d}-{st.tm_mday:02d} 全天", daily_page
-
-        return 0.0, 0.0, "实时近况", base_page
+        lt = time.localtime()
+        start = time.mktime((lt.tm_year, lt.tm_mon, lt.tm_mday, 0, 0, 0, 0, 0, -1))
+        st = time.localtime(start)
+        return start, time.time(), f"今日 {st.tm_mon:02d}-{st.tm_mday:02d} 全天", daily_page
 
     async def _report_or_error(self, tag: str):
         try:
@@ -664,6 +738,45 @@ class SyuanMonitorPlugin(Star):
         except Exception as exc:
             logger.warning(f"{LOG_TAG} [{tag}] 失败: {exc!r}")
             return None, error_response("拉取中转站数据失败", status_code=502)
+
+    def _theme_name(self) -> str:
+        """当前主题：以插件设置为准，没配就回落 dark。"""
+        try:
+            return normalize_theme(self.config.get("theme"))
+        except Exception:
+            return "dark"
+
+    async def _api_theme(self) -> Any:
+        """GET 读当前主题；POST 写入主题。
+
+        WebUI 切换外观时回写到这里，卡片与插件设置页共用同一个值，三处不会打架。
+        """
+        try:
+            payload = await plugin_request.json({})
+        except Exception:
+            payload = {}
+        want = payload.get("theme") if isinstance(payload, dict) else None
+
+        if want:
+            target = normalize_theme(want)
+            self.config["theme"] = target
+            try:
+                saver = getattr(self.config, "save_config_async", None)
+                if saver is not None:
+                    await saver({"theme": target})
+                else:
+                    self.config.save_config({"theme": target})
+            except Exception as exc:
+                logger.warning(f"{LOG_TAG} [theme] 写回配置失败: {exc!r}")
+                return json_response(
+                    {"status": "error", "theme": self._theme_name(), "saved": False,
+                     "message": "界面已切换，但写回插件设置失败"},
+                    status_code=500,
+                )
+            logger.info(f"{LOG_TAG} [theme] 已同步为 {target}")
+            return json_response({"status": "ok", "theme": target, "saved": True})
+
+        return json_response({"status": "ok", "theme": self._theme_name(), "saved": False})
 
     async def _api_wallet(self) -> Any:
         """钱包：余额 / 已用 / 请求次数 / 邀请奖励 + 签到状态（都带折算金额）"""
@@ -761,7 +874,7 @@ class SyuanMonitorPlugin(Star):
         )
 
     async def _api_models(self) -> Any:
-        """各模型的调用次数、花费、平均延迟与报错数"""
+        """各模型的成功调用次数、花费与平均延迟（只吃成功调用，不含报错）"""
         data, err = await self._report_or_error("models")
         if err:
             return err
@@ -771,18 +884,19 @@ class SyuanMonitorPlugin(Star):
                 {
                     "model": name,
                     "calls": stat.get("calls", 0),
-                    "errors": stat.get("errors", 0),
                     "cost": round(stat.get("quota", 0) / QUOTA_PER_USD, 6),
                     "avg_latency": round(stat.get("latency", 0.0), 3),
+                    "tokens": stat.get("tokens", 0),
                 }
             )
-        items.sort(key=lambda x: x["calls"] + x["errors"], reverse=True)
+        items.sort(key=lambda x: x["calls"], reverse=True)
         return json_response(
             {
                 "status": "ok",
                 "scope": data.get("scope"),
                 "period": data.get("period"),
-                "items": items,
+                "total": len(items),
+                "items": self._paginate(items),
             }
         )
 
@@ -808,17 +922,23 @@ class SyuanMonitorPlugin(Star):
                 }
             )
         items.sort(key=lambda x: x["calls"], reverse=True)
-        return json_response({"status": "ok", "items": items})
+        return json_response(
+            {
+                "status": "ok",
+                "total": len(items),
+                "items": self._paginate(items),
+            }
+        )
 
     async def _api_logs(self) -> Any:
-        """最近的调用流水明细（含成功/失败标记）"""
+        """成功调用流水明细（报错已被剥离，走 /errors 单独成页）"""
         data, err = await self._report_or_error("logs")
         if err:
             return err
-        limit = max(1, min(500, self._q_int("limit", 80)))
         items = []
-        for log in data.get("all_logs", [])[:limit]:
-            is_error = log.get("type") == TYPE_ERROR
+        for log in data.get("all_logs", []):
+            if log.get("type") == TYPE_ERROR:
+                continue  # 与报错日志完全分开，此处只保留成功调用
             content = str(log.get("content") or "")
             match = CODE_PAT.search(content)
             items.append(
@@ -828,9 +948,9 @@ class SyuanMonitorPlugin(Star):
                     "channel": log.get("channel"),
                     "group": log.get("group") or "",
                     "type": log.get("type"),
-                    "status": "error" if is_error else "ok",
+                    "status": "ok",
                     "code": int(match.group(1)) if match else 0,
-                    "detail": _cut(content, 200) if is_error else "",
+                    "detail": "",
                     "created_at": log.get("created_at", 0),
                     "use_time": log.get("use_time", 0),
                     "is_stream": bool(log.get("is_stream")),
@@ -839,12 +959,14 @@ class SyuanMonitorPlugin(Star):
                     "completion_tokens": log.get("completion_tokens", 0),
                 }
             )
+        items.sort(key=lambda x: x["created_at"], reverse=True)
         return json_response(
             {
                 "status": "ok",
                 "scope": data.get("scope"),
                 "period": data.get("period"),
-                "items": items,
+                "total": len(items),
+                "items": self._paginate(items),
             }
         )
 
@@ -862,7 +984,6 @@ class SyuanMonitorPlugin(Star):
         code = self._q("code")
         keyword = self._q("keyword").lower()
         hours = self._q_int("hours", 0)
-        limit = max(1, min(1000, self._q_int("limit", 300)))
 
         if model:
             items = [i for i in items if i["model"] == model]
@@ -895,7 +1016,7 @@ class SyuanMonitorPlugin(Star):
                 "by_code": stats["by_code"],
                 "hourly": stats["hourly"],
                 "top_messages": stats["top_messages"],
-                "items": items[:limit],
+                "items": self._paginate(items),
                 "updated_at": time.strftime("%Y-%m-%d %H:%M:%S"),
             }
         )
@@ -966,7 +1087,7 @@ class SyuanMonitorPlugin(Star):
         try:
             start, end, period, page = self._window_from_query()
             data = await asyncio.to_thread(self._collect, False, start, end, period, page)
-            card_bytes = await asyncio.to_thread(render_journal_card, data)
+            card_bytes = await asyncio.to_thread(render_journal_card, data, self._theme_name())
         except Exception as exc:
             logger.warning(f"{LOG_TAG} [card] 渲染失败: {exc!r}")
             return error_response("渲染手账卡片失败", status_code=500)
@@ -1017,7 +1138,7 @@ class SyuanMonitorPlugin(Star):
                 "唔……大魔王去翻账本的时候没能连上中转站，稍后再试一下好不好？"
             )
             return
-        card_bytes = await asyncio.to_thread(render_journal_card, data)
+        card_bytes = await asyncio.to_thread(render_journal_card, data, self._theme_name())
         yield event.chain_result([Img.fromBytes(card_bytes)])
 
     @filter.command("api报错", "api错误", "api故障")
@@ -1207,8 +1328,57 @@ class SyuanMonitorPlugin(Star):
         minute = min(59, max(0, int(match.group(2))))
         return hour * 60 + minute
 
+    def _daily_push_targets(self) -> List[str]:
+        """推送白名单（日报 / 报错尖峰 / 签到播报共用）：留空回落到默认用户
+
+        支持逗号 / 分号 / 空格 / 换行分隔，也兼容配置里直接给列表；
+        只保留纯数字的 QQ 号，自动去重并保持填写顺序。
+        """
+        raw = self.config.get("push_users")
+        if not str(raw or "").strip():
+            # 兼容早期只配了 daily_push_users 的情况
+            raw = self.config.get("daily_push_users")
+        if isinstance(raw, (list, tuple, set)):
+            parts = [str(item) for item in raw]
+        else:
+            parts = re.split(r"[,，;；、\s]+", str(raw or ""))
+        targets: List[str] = []
+        for item in parts:
+            uid = item.strip().lstrip("@")
+            if not re.fullmatch(r"\d{5,12}", uid):
+                continue
+            if uid not in targets:
+                targets.append(uid)
+        if not targets:
+            fallback = str(self.target_user or "").strip()
+            if fallback:
+                targets.append(fallback)
+            else:
+                logger.warning(f"{LOG_TAG} 日报白名单为空，且默认用户未配置")
+        return targets
+
+    async def _broadcast(self, make_components, tag: str = "推送") -> int:
+        """按白名单逐个私聊投递；单人失败只记日志，不影响其他人
+
+        make_components(uid) 返回该用户要收到的消息组件列表。
+        """
+        targets = self._daily_push_targets()
+        if not targets:
+            logger.warning(f"{LOG_TAG} {tag}：白名单为空，本次跳过")
+            return 0
+        sent = 0
+        for uid in targets:
+            session_id = f"aiocqhttp:FriendMessage:{uid}"
+            try:
+                await self.context.send_message(session_id, make_components(uid))
+                sent += 1
+                logger.info(f"{LOG_TAG} {tag}已推送给 {uid}")
+            except Exception as exc:
+                logger.error(f"{LOG_TAG} {tag}推送给 {uid} 失败: {exc!r}")
+        return sent
+
     async def _start_auto_checkin(self):
-        """每天到点替 keyou 自动签到，成功才私聊播报一句"""
+        """每天到点自动签到，成功才按白名单逐个播报一句"""
         if not self._auto_checkin_enabled():
             logger.info(f"{LOG_TAG} 自动签到未开启（auto_checkin_enabled=false）")
             return
@@ -1239,9 +1409,12 @@ class SyuanMonitorPlugin(Star):
                         f"Oha~！自动签到完成啦，{quota:,} 额度已经到手{extra}"
                         f"（{res.get('checkin_date') or '今天'}）。大魔王会一直帮你盯着 (๑˃ᴗ˂๑)"
                     )
-                    session_id = f"aiocqhttp:FriendMessage:{self.target_user}"
-                    await self.context.send_message(session_id, [Plain(text)])
-                    logger.info(f"{LOG_TAG} 自动签到成功：+{res.get('quota_awarded')}")
+                    sent = await self._broadcast(
+                        lambda uid: [Plain(text)], tag="自动签到播报"
+                    )
+                    logger.info(
+                        f"{LOG_TAG} 自动签到成功：+{res.get('quota_awarded')}，播报 {sent} 人"
+                    )
                 elif res.get("already"):
                     logger.info(f"{LOG_TAG} 自动签到：今天站点那边已经签过了")
                 else:
@@ -1273,7 +1446,7 @@ class SyuanMonitorPlugin(Star):
         return f"当前余额：{symbol}{quota / per_unit:.2f}（{quota:,} 额度）"
 
     async def _start_daily_cron(self):
-        """每天早上 06:00 定时推送给 keyou"""
+        """每天早上 06:00 按白名单推送账本卡片（daily_push_users）"""
         while True:
             try:
                 now = time.localtime()
@@ -1297,33 +1470,36 @@ class SyuanMonitorPlugin(Star):
                     int(self.config.get("daily_page_size") or 3000),
                 )
                 balance_line = await self._wallet_line()
+
+                card_bytes = None
                 if data and data.get("all_logs"):
                     data["flow_rows"] = int(self.config.get("daily_flow_rows") or 0)
-                    card_bytes = await asyncio.to_thread(render_journal_card, data)
-                    session_id = f"aiocqhttp:FriendMessage:{self.target_user}"
-                    await self.context.send_message(
-                        session_id,
-                        [
+                    card_bytes = await asyncio.to_thread(
+                        render_journal_card, data, self._theme_name()
+                    )
+                elif not balance_line:
+                    logger.info(f"{LOG_TAG} {label} 窗口内没有流水，跳过本次推送")
+                    continue
+
+                # 卡片与余额只渲染一次，白名单内逐个投递，单人失败不影响其他人
+                def _daily_components(uid: str):
+                    if card_bytes is not None:
+                        return [
                             Plain(
-                                f"Oha~！优可，{label}的 API 与工具手账整理好啦，快来看看~ (๑˃̵ᴗ˂̵)و\n"
+                                f"Oha~！{label}的 API 与工具手账整理好啦，快来看看~ (๑˃̵ᴗ˂̵)و\n"
                                 + balance_line
                             ),
                             Img.fromBytes(card_bytes),
-                        ],
-                    )
-                elif balance_line:
-                    session_id = f"aiocqhttp:FriendMessage:{self.target_user}"
-                    await self.context.send_message(
-                        session_id,
-                        [
-                            Plain(
-                                f"Oha~！优可，{label}没有新的流水，大魔王只报一下余额~\n"
-                                + balance_line
-                            )
-                        ],
-                    )
-                else:
-                    logger.info(f"{LOG_TAG} {label} 窗口内没有流水，跳过本次推送")
+                        ]
+                    return [
+                        Plain(
+                            f"Oha~！{label}没有新的流水，大魔王只报一下余额~\n"
+                            + balance_line
+                        )
+                    ]
+
+                sent = await self._broadcast(_daily_components, tag=f"{label} 日报")
+                logger.info(f"{LOG_TAG} {label} 日报推送完成：{sent} 人")
             except asyncio.CancelledError:
                 break
             except Exception as e:
@@ -1355,16 +1531,15 @@ class SyuanMonitorPlugin(Star):
                 if time.time() - self._last_alert_at < cooldown:
                     continue
                 self._last_alert_at = time.time()
-                session_id = f"aiocqhttp:FriendMessage:{self.target_user}"
-                await self.context.send_message(
-                    session_id,
-                    [
+                await self._broadcast(
+                    lambda uid: [
                         Plain(
-                            f"优可……星渊那边在冒烟了！近十分钟里有 {burst} 条报错，"
+                            f"星渊那边在冒烟了！近十分钟里有 {burst} 条报错，"
                             f"大魔王帮你抓了最新几条，要不要看一眼？（.api报错）\n"
                         ),
                         Plain(self._error_text_report(data, top=3)),
                     ],
+                    tag="报错尖峰提醒",
                 )
             except asyncio.CancelledError:
                 break

@@ -504,6 +504,46 @@ class SyuanAccount:
         }
         return self._cache_put(ck, info)
 
+    def log_stat(
+        self, start_ts: float = 0.0, end_ts: float = 0.0, force: bool = False
+    ) -> Dict[str, Any]:
+        """上游用量汇总（/api/log/self/stat）：区间内的额度消耗与速率。
+
+        返回 {quota, cache_rate, rpm, tpm}。传 [start_ts, end_ts) 秒级时间戳即可
+        拿到该区间汇总；这是站点侧直接聚合好的结果，比本地扫流水快得多。
+        """
+        ck = f"stat:{int(start_ts)}:{int(end_ts)}"
+        # 汇总口径不必高频刷新，缓存给到 3 倍基础 TTL，压低上游压力
+        ttl = max(self.ttl, self.ttl * 3)
+        if not force:
+            hit = self._cache_get(ck, ttl)
+            if hit is not None:
+                return hit
+
+        query = ""
+        if start_ts:
+            query += f"&start_timestamp={int(start_ts)}"
+        if end_ts:
+            query += f"&end_timestamp={int(end_ts)}"
+        body, err = self._request(f"/api/log/self/stat?p=1&page_size=1{query}")
+        if err:
+            stale = self._cache.get(ck)
+            if stale:
+                return dict(stale[1], stale_error=err)
+            return {"error": err, "quota": None}
+
+        data = (body or {}).get("data") or {}
+        if not isinstance(data, dict):
+            data = {}
+        info = {
+            "quota": int(data.get("quota") or 0),
+            "cache_rate": float(data.get("cache_rate") or 0.0),
+            "rpm": int(data.get("rpm") or 0),
+            "tpm": int(data.get("tpm") or 0),
+            "fetched_at": int(time.time()),
+        }
+        return self._cache_put(ck, info)
+
     #: 入账来源 → 展示名
     SOURCE_LABEL = {
         "self": "自己充值",

@@ -4,7 +4,18 @@
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
   <title>大魔王的星渊账本</title>
-  <link rel="stylesheet" href="./style.css" />
+  <link rel="stylesheet" href="./style.css?v=20260911d" />
+  <script>
+    /* 首屏防闪：先按本地记录把主题挂到 html 上，再等样式上屏 */
+    (function () {
+      try {
+        var saved = localStorage.getItem("syuan-theme") || "dark";
+        document.documentElement.setAttribute("data-theme", saved);
+      } catch (e) {
+        document.documentElement.setAttribute("data-theme", "dark");
+      }
+    })();
+  </script>
 </head>
 <body>
   <div class="wrap">
@@ -14,22 +25,11 @@
         <p id="subtitle" class="subtitle">正在连线中转站……</p>
       </div>
       <div class="tools">
-        <div class="seg" id="rangeSeg" title="切换统计窗口：实时 / 昨日全天 / 今日全天">
-          <button class="seg-btn active" type="button" data-range="live">实时</button>
+        <div class="seg" id="rangeSeg" title="切换统计窗口：昨日全天 / 今日全天">
           <button class="seg-btn" type="button" data-range="yesterday">昨日</button>
-          <button class="seg-btn" type="button" data-range="today">今日</button>
+          <button class="seg-btn active" type="button" data-range="today">今日</button>
         </div>
-        <label class="switch" title="开启后按设定间隔自动拉取实时数据">
-          <input id="liveToggle" type="checkbox" />
-          <span>实时</span>
-        </label>
-        <select id="liveInterval" class="input select-sm" title="刷新间隔">
-          <option value="5">5 秒</option>
-          <option value="10" selected>10 秒</option>
-          <option value="30">30 秒</option>
-          <option value="60">60 秒</option>
-        </select>
-        <span id="liveDot" class="live-dot"></span>
+        <button id="themeBtn" class="btn" type="button" title="切换黑夜 / 白昼">白昼</button>
         <button id="reloadBtn" class="btn" type="button">刷新数据</button>
       </div>
     </header>
@@ -81,13 +81,14 @@
           <table class="tbl">
             <thead>
               <tr>
-                <th>模型</th><th class="num">调用</th><th class="num">报错</th>
+                <th>模型</th><th class="num">调用</th>
                 <th class="num">均延</th><th class="num">花费</th>
               </tr>
             </thead>
             <tbody id="modelBody"></tbody>
           </table>
         </div>
+        <div id="modelPager" class="pager-host"></div>
       </section>
     </div>
 
@@ -129,6 +130,7 @@
             <button class="seg-btn" type="button" data-src="code">兑换码</button>
             <button class="seg-btn" type="button" data-src="checkin">签到</button>
             <button class="seg-btn" type="button" data-src="aff">邀请</button>
+            <button class="seg-btn" type="button" data-src="other">其它</button>
           </div>
         </div>
         <div class="chips" id="walLedgerChips"></div>
@@ -217,6 +219,7 @@
             <tbody id="errBody"></tbody>
           </table>
         </div>
+        <div id="errPager" class="pager-host"></div>
         <p id="errFoot" class="muted"></p>
       </section>
     </div>
@@ -246,6 +249,7 @@
             <tbody id="logBody"></tbody>
           </table>
         </div>
+        <div id="logPager" class="pager-host"></div>
       </section>
     </div>
 
@@ -267,6 +271,7 @@
             <tbody id="toolBody"></tbody>
           </table>
         </div>
+        <div id="toolPager" class="pager-host"></div>
       </section>
     </div>
 
@@ -284,6 +289,6 @@
     </div>
   </div>
 
-  <script src="./app.js"></script>
+  <script src="./app.js?v=20260911d"></script>
 </body>
 </html>

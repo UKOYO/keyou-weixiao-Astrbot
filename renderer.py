@@ -22,27 +22,73 @@ if not os.path.exists(REG_FONT_PATH):
 
 # ------------------------------------------------------------------ 调色板
 
-BG          = (38, 38, 38)     # 3D 视口底色
-BG_GRID     = (45, 45, 45)     # 视口网格
-HEADER_TOP  = (58, 58, 58)     # 标题栏渐变上
-HEADER_BOT  = (44, 44, 44)     # 标题栏渐变下
-PANEL       = (53, 53, 53)     # 面板
-PANEL_TOP   = (60, 60, 60)
-PANEL_LINE  = (20, 20, 20)     # 倒角暗边
-PANEL_HI    = (74, 74, 74)     # 顶部高光
-SHADOW      = (26, 26, 26)
+# 双主题调色板：dark = 原有 Blender 深灰视口；light = 冷白灰（最亮基准 #e1e1e1）
+# 最暗基准 #333333 在白昼版里转为正文字色，保证对比度。
+THEMES: Dict[str, Dict[str, tuple]] = {
+    "dark": {
+        "BG": (38, 38, 38), "BG_GRID": (45, 45, 45),
+        "HEADER_TOP": (58, 58, 58), "HEADER_BOT": (44, 44, 44),
+        "PANEL": (53, 53, 53), "PANEL_TOP": (60, 60, 60),
+        "PANEL_LINE": (20, 20, 20), "PANEL_HI": (74, 74, 74), "SHADOW": (26, 26, 26),
+        "INK": (232, 232, 232), "INK_MUTED": (154, 154, 154), "INK_FAINT": (108, 108, 108),
+        "TITLE_INK": (242, 242, 242), "VALUE_INK": (244, 244, 244),
+        "CHIP_BG": (31, 31, 31), "CHIP_INK": (198, 198, 198),
+        "FLOW_C1": (150, 150, 150), "FLOW_C2": (70, 70, 70),
+        "ORANGE": (232, 125, 13), "ORANGE_LT": (255, 159, 67),
+        "BLUE": (71, 114, 179), "BLUE_LT": (107, 150, 216),
+        "GREEN": (124, 184, 95), "GREEN_LT": (150, 208, 130),
+        "RED": (217, 83, 79), "RED_LT": (232, 118, 111),
+        "YELLOW": (224, 169, 46), "YELLOW_LT": (242, 193, 78),
+        "CORAL": (226, 114, 102),
+    },
+    "light": {
+        "BG": (225, 225, 225), "BG_GRID": (214, 214, 214),
+        "HEADER_TOP": (245, 245, 245), "HEADER_BOT": (233, 233, 233),
+        "PANEL": (242, 242, 242), "PANEL_TOP": (250, 250, 250),
+        "PANEL_LINE": (198, 198, 198), "PANEL_HI": (255, 255, 255), "SHADOW": (204, 204, 204),
+        "INK": (51, 51, 51), "INK_MUTED": (108, 108, 108), "INK_FAINT": (146, 146, 146),
+        "TITLE_INK": (44, 44, 44), "VALUE_INK": (34, 34, 34),
+        "CHIP_BG": (230, 230, 230), "CHIP_INK": (72, 72, 72),
+        "FLOW_C1": (152, 152, 152), "FLOW_C2": (108, 108, 108),
+        "ORANGE": (206, 104, 8), "ORANGE_LT": (224, 128, 34),
+        "BLUE": (54, 92, 152), "BLUE_LT": (78, 118, 178),
+        "GREEN": (84, 142, 62), "GREEN_LT": (96, 158, 72),
+        "RED": (190, 62, 58), "RED_LT": (182, 58, 54),
+        "YELLOW": (170, 124, 20), "YELLOW_LT": (168, 120, 18),
+        "CORAL": (196, 88, 76),
+    },
+}
 
-INK         = (232, 232, 232)
-INK_MUTED   = (154, 154, 154)
-INK_FAINT   = (108, 108, 108)
+#: 当前生效主题，apply_theme() 会把它同步进模块全局
+CURRENT_THEME = "dark"
 
-ORANGE      = (232, 125, 13)   # Blender 主橙
-ORANGE_LT   = (255, 159, 67)
-BLUE        = (71, 114, 179)
-GREEN       = (124, 184, 95)
-RED         = (217, 83, 79)
-YELLOW      = (224, 169, 46)
-CORAL       = (226, 114, 102)
+# 全局色名占位，import 后由 apply_theme() 填充
+BG = BG_GRID = HEADER_TOP = HEADER_BOT = PANEL = PANEL_TOP = PANEL_LINE = PANEL_HI = SHADOW = (0, 0, 0)
+INK = INK_MUTED = INK_FAINT = TITLE_INK = VALUE_INK = CHIP_BG = CHIP_INK = (0, 0, 0)
+FLOW_C1 = FLOW_C2 = ORANGE = ORANGE_LT = BLUE = BLUE_LT = (0, 0, 0)
+GREEN = GREEN_LT = RED = RED_LT = YELLOW = YELLOW_LT = CORAL = (0, 0, 0)
+
+
+def normalize_theme(name: Any) -> str:
+    """把配置里各种写法归一成 dark / light。"""
+    text = str(name or "").strip().lower()
+    if text in ("light", "day", "white", "bright", "白昼", "白色", "亮色", "浅色", "1", "true"):
+        return "light"
+    return "dark"
+
+
+def apply_theme(name: Any) -> str:
+    """切换调色板。返回实际生效的主题名。"""
+    global CURRENT_THEME
+    key = normalize_theme(name)
+    g = globals()
+    for k, v in THEMES[key].items():
+        g[k] = tuple(v)
+    g["CURRENT_THEME"] = key
+    return key
+
+
+apply_theme("dark")
 
 _EMOJI_CACHE: Dict[tuple, Image.Image] = {}
 
@@ -109,7 +155,11 @@ def _left_fit(draw, text: str, font, x_left: int, right_x: int, gap: int = 16, m
     return _fit(draw, text, font, max(min_w, right_x - gap - x_left))
 
 
-def _bevel_panel(draw, box, radius: int = 6, fill=PANEL, top=PANEL_TOP, line=PANEL_LINE, hi=PANEL_HI):
+def _bevel_panel(draw, box, radius: int = 6, fill=None, top=None, line=None, hi=None):
+    fill = PANEL if fill is None else fill
+    top = PANEL_TOP if top is None else top
+    line = PANEL_LINE if line is None else line
+    hi = PANEL_HI if hi is None else hi
     """画一块带倒角高光的立体面板。"""
     x0, y0, x1, y1 = box
     # 落影
@@ -133,7 +183,9 @@ def _accent_bar(draw, x: int, y0: int, y1: int, c1, c2, w: int = 5, radius: int 
 
 # ------------------------------------------------------------------ 主渲染
 
-def render_journal_card(data: Dict[str, Any]) -> bytes:
+def render_journal_card(data: Dict[str, Any], theme: Any = None) -> bytes:
+    # 主题优先取入参，没传就沿用当前生效主题（由 main.py 按插件配置设定）
+    apply_theme(theme if theme is not None else CURRENT_THEME)
     width = 900
     tool_stats = data.get("tool_stats", {}) or {}
     model_stats = data.get("model_stats", {}) or {}
@@ -194,7 +246,7 @@ def render_journal_card(data: Dict[str, Any]) -> bytes:
     tx = (width - total) / 2
     ty = 22
     img.paste(_emoji("🍀", leaf), (int(tx), int(ty + 1)), _emoji("🍀", leaf))
-    draw.text((tx + leaf + gap, ty), title_text, fill=(242, 242, 242), font=f_title)
+    draw.text((tx + leaf + gap, ty), title_text, fill=TITLE_INK, font=f_title)
     img.paste(_emoji("🍀", leaf), (int(tx + leaf + gap + tw + gap), int(ty + 1)), _emoji("🍀", leaf))
 
     period = data.get("period") or "实时近况"
@@ -211,9 +263,9 @@ def render_journal_card(data: Dict[str, Any]) -> bytes:
 
     boxes = [
         ("中转总调用", f"{total_calls} 次", ORANGE_LT, ORANGE),
-        ("总费用估算", f"${total_quota:.4f}", (242, 193, 78), YELLOW),
-        ("中转平均延迟", f"{avg_latency:.2f} 秒", (150, 208, 130), GREEN),
-        ("报错条数", f"{len(error_items)} 条", (232, 118, 111), RED),
+        ("总费用估算", f"${total_quota:.4f}", YELLOW_LT, YELLOW),
+        ("中转平均延迟", f"{avg_latency:.2f} 秒", GREEN_LT, GREEN),
+        ("报错条数", f"{len(error_items)} 条", RED_LT, RED),
     ]
     card_w = (width - 48 - 48) // 4
     y_top = 110
@@ -223,12 +275,12 @@ def render_journal_card(data: Dict[str, Any]) -> bytes:
         _bevel_panel(draw, box, radius=6)
         _accent_bar(draw, bx, y_top, y_top + 70, c1, c2, w=5)
         draw.text((bx + 16, y_top + 12), label, fill=INK_MUTED, font=f_small)
-        draw.text((bx + 16, y_top + 34), val, fill=(244, 244, 244), font=f_bold)
+        draw.text((bx + 16, y_top + 34), val, fill=VALUE_INK, font=f_bold)
 
     cur_y = y_top + 70 + 22
 
     # ---- 报错速览
-    draw.text((24, cur_y), "最近报错速览 (Recent Errors)", fill=(232, 150, 145), font=f_bold)
+    draw.text((24, cur_y), "最近报错速览 (Recent Errors)", fill=RED_LT, font=f_bold)
     draw.line([(24, cur_y + 25), (width - 24, cur_y + 25)], fill=PANEL_LINE, width=1)
     cur_y += 36
 
@@ -236,7 +288,7 @@ def render_journal_card(data: Dict[str, Any]) -> bytes:
         box = (24, cur_y, width - 24, cur_y + 32)
         _bevel_panel(draw, box, radius=6)
         _accent_bar(draw, 24, cur_y, cur_y + 32, GREEN, GREEN, w=5)
-        draw.text((38, cur_y + 8), "最近的日志里一条报错都没有，中转站很乖", fill=(150, 208, 130), font=f_small)
+        draw.text((38, cur_y + 8), "最近的日志里一条报错都没有，中转站很乖", fill=GREEN_LT, font=f_small)
         cur_y += 32 + 18
     else:
         for item in error_items[:3]:
@@ -244,7 +296,7 @@ def render_journal_card(data: Dict[str, Any]) -> bytes:
             left = f"{e_ts} · {item.get('token', '-')} · {item.get('model', '-')} · {item.get('kind', '')}"
             box = (24, cur_y, width - 24, cur_y + 30)
             _bevel_panel(draw, box, radius=6)
-            _accent_bar(draw, 24, cur_y, cur_y + 30, (232, 118, 111), RED, w=5)
+            _accent_bar(draw, 24, cur_y, cur_y + 30, RED_LT, RED, w=5)
             det, det_x = _tail(draw, item.get("detail", ""), f_tiny, 38 + 140, width - 36)
             draw.text((38, cur_y + 7), _left_fit(draw, left, f_small, 38, det_x), fill=INK, font=f_small)
             draw.text((det_x, cur_y + 9), det, fill=INK_FAINT, font=f_tiny)
@@ -269,7 +321,7 @@ def render_journal_card(data: Dict[str, Any]) -> bytes:
             toks = st.get("tokens", 0)
             box = (24, cur_y, width - 24, cur_y + 50)
             _bevel_panel(draw, box, radius=6)
-            _accent_bar(draw, 24, cur_y, cur_y + 50, (107, 150, 216), BLUE, w=5)
+            _accent_bar(draw, 24, cur_y, cur_y + 50, BLUE_LT, BLUE, w=5)
             right, right_x = _tail(
                 draw, f"触发 {calls} 次  |  Token {toks}  |  ${cost:.4f}", f_small, 340, width - 36
             )
@@ -306,7 +358,7 @@ def render_journal_card(data: Dict[str, Any]) -> bytes:
         m_lat = st.get("latency", 0.0) or 0.0
         box = (24, cur_y, width - 24, cur_y + 32)
         _bevel_panel(draw, box, radius=6)
-        _accent_bar(draw, 24, cur_y, cur_y + 32, (242, 193, 78), YELLOW, w=5)
+        _accent_bar(draw, 24, cur_y, cur_y + 32, YELLOW_LT, YELLOW, w=5)
         right, right_x = _tail(
             draw, f"调用 {m_calls} 次  |  均延 {m_lat:.1f}s  |  总额 ${m_cost:.4f}", f_small, 320, width - 36
         )
@@ -330,9 +382,9 @@ def render_journal_card(data: Dict[str, Any]) -> bytes:
             out_tok = log.get("completion_tokens", 0)
             box = (24, cur_y, width - 24, cur_y + 38)
             _bevel_panel(draw, box, radius=6)
-            _accent_bar(draw, 24, cur_y, cur_y + 38, (150, 150, 150), (70, 70, 70), w=5)
-            draw.rounded_rectangle([(38, cur_y + 8), (110, cur_y + 30)], radius=4, fill=(31, 31, 31), outline=PANEL_LINE)
-            draw.text((46, cur_y + 11), t_str, fill=(198, 198, 198), font=f_mono)
+            _accent_bar(draw, 24, cur_y, cur_y + 38, FLOW_C1, FLOW_C2, w=5)
+            draw.rounded_rectangle([(38, cur_y + 8), (110, cur_y + 30)], radius=4, fill=CHIP_BG, outline=PANEL_LINE)
+            draw.text((46, cur_y + 11), t_str, fill=CHIP_INK, font=f_mono)
             det, det_x = _tail(
                 draw, f"耗时 {use_time}s  |  Token {in_tok}+{out_tok}  |  ${cost:.5f}", f_small, 300, width - 36
             )

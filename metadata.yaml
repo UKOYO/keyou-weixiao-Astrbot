@@ -1,6 +1,6 @@
 name: astrbot_plugin_syuan_monitor
 display_name: 星渊 API 监控与工具账本
 desc: 实时监控星渊 API 消费、模型调用分布、耗时，统计插件与工具调用账本及 WebUI 可视化。
-version: 1.2.0
+version: 1.2.1
 author: 唯笑 & keyou
 repo: https://github.com/UKOYO/keyou-weixiao-Astrbot
